@@ -2,7 +2,7 @@
 真 PTY 终端 + WebSocket + 真实 cgroup 配额采样
 注意：psutil / nproc / free 在容器内返回宿主数据，不可采信，配额一律读 cgroup。
 """
-import os, pty, fcntl, termios, struct, asyncio, signal, json, time
+import os, pty, fcntl, termios, struct, asyncio, signal, json, time, re
 import hashlib, hmac, secrets, base64
 import psutil
 import requests as _requests
@@ -1221,7 +1221,15 @@ async def manifest(request: Request):
         m = json.loads((STATIC / "manifest.json").read_text(encoding="utf-8"))
     except Exception:
         return JSONResponse({"error": "manifest not found"}, status_code=404)
+    # 网关会消费掉查询串里的 sharecode，因此依次尝试：查询串 → Referer → Cookie
     sc_ = request.query_params.get("sharecode")
+    if not sc_:
+        ref = request.headers.get("referer", "")
+        m_ref = re.search(r"[?&]sharecode=([A-Za-z0-9_-]+)", ref)
+        if m_ref:
+            sc_ = m_ref.group(1)
+    if not sc_:
+        sc_ = request.cookies.get("sharecode") or ""
     if sc_:
         suffix = "?sharecode=" + sc_
         m["start_url"] = "/" + suffix
