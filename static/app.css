@@ -545,46 +545,125 @@ body:not(.tab-term) #keys{display:none !important}
 @media (min-width:821px){#keys{display:none !important}}
 
 /* ── 浏览 / 端口预览 ── */
-#browbar{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--stroke);align-items:center}
-#browbar input{
-  flex:1;min-width:0;padding:9px 11px;border-radius:9px;font-size:13px;
-  background:rgba(0,0,0,.36);border:1px solid var(--stroke);color:var(--text);
-  outline:none;font-family:inherit;transition:border-color .18s;
+#tab-browse{display:flex;flex-direction:column}
+#browbar{
+  display:flex;gap:6px;padding:8px 10px;align-items:center;
+  border-bottom:1px solid var(--stroke);background:var(--bg-2);
+  flex:0 0 auto;
 }
-#browbar input:focus{border-color:var(--accent)}
-#browbar button{
-  padding:8px 12px;border-radius:9px;font-size:12.5px;font-family:inherit;
-  background:var(--surface);border:1px solid var(--stroke);color:var(--text-2);
-  cursor:pointer;white-space:nowrap;transition:all .15s;
+.bico{
+  flex:0 0 auto;width:32px;height:32px;display:grid;place-items:center;
+  border-radius:9px;background:var(--surface);border:1px solid var(--stroke);
+  color:var(--text-2);cursor:pointer;transition:all .15s var(--ease);
+  -webkit-tap-highlight-color:transparent;
 }
-#browbar button:active{background:var(--surface-hi);color:var(--text)}
-#browbar select{
-  padding:8px 4px;border-radius:9px;font-size:11.5px;background:rgba(0,0,0,.36);
-  border:1px solid var(--stroke);color:var(--text-2);outline:none;
-  max-width:78px;cursor:pointer;
+.bico svg{width:16px;height:16px;display:block}
+.bico:hover{background:var(--surface-hi);color:var(--text)}
+.bico:active{transform:scale(.94);background:var(--surface-hi)}
+
+/* 地址栏：整体像一枚胶囊，左侧引擎标签，右侧清空 */
+.baddr{
+  flex:1;min-width:0;display:flex;align-items:center;gap:2px;
+  height:34px;padding:0 4px 0 3px;border-radius:10px;
+  background:rgba(0,0,0,.4);border:1px solid var(--stroke);
+  transition:border-color .18s,box-shadow .18s;
 }
-#browchips{display:flex;flex-wrap:wrap;gap:6px;padding:9px 10px;
-           border-bottom:1px solid var(--stroke);align-items:center}
+.baddr:focus-within{border-color:rgba(217,119,87,.5);box-shadow:0 0 0 3px rgba(217,119,87,.1)}
+.beng{
+  flex:0 0 auto;height:26px;padding:0 7px;margin-right:1px;
+  border:none;border-radius:7px;background:var(--accent-dim);
+  color:var(--accent);font-family:inherit;font-size:10.5px;font-weight:600;
+  cursor:pointer;letter-spacing:.02em;white-space:nowrap;
+}
+.beng:active{background:rgba(217,119,87,.2)}
+#browaddr{
+  flex:1;min-width:0;height:100%;border:none;background:transparent;
+  color:var(--text);font-size:12.5px;font-family:inherit;outline:none;
+}
+#browaddr::placeholder{color:var(--faint)}
+.bx{
+  flex:0 0 auto;width:22px;height:22px;display:grid;place-items:center;
+  border:none;background:transparent;color:var(--faint);cursor:pointer;border-radius:6px;
+}
+.bx svg{width:13px;height:13px}
+.bx:active{background:var(--surface-hi);color:var(--text)}
+
+#browchips{
+  display:flex;flex-wrap:wrap;gap:6px;padding:8px 10px;
+  border-bottom:1px solid var(--stroke);align-items:center;flex:0 0 auto;
+}
+#browchips:empty{display:none}
 #browchips .hint{font-size:11px;color:var(--dim);line-height:1.55}
 .chip{
-  padding:5px 11px;border-radius:20px;font-size:11.5px;
+  padding:5px 11px;border-radius:20px;font-size:11.5px;font-family:inherit;
   background:var(--surface);border:1px solid var(--stroke);color:var(--text-2);
-  cursor:pointer;transition:all .15s;
+  cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:5px;
 }
-.chip:active{background:var(--surface-hi);color:var(--text)}
-#browframe{flex:1;width:100%;border:none;background:#fff;min-height:0}
-#browtools{display:none;gap:6px;padding:7px 10px;border-bottom:1px solid var(--stroke);
-           align-items:center;flex-wrap:wrap}
-#browtools button{
-  padding:6px 10px;border-radius:8px;font-size:11.5px;font-family:inherit;
-  background:var(--surface);border:1px solid var(--stroke);color:var(--text-2);cursor:pointer;
+.chip:active{background:var(--surface-hi);color:var(--text);transform:scale(.97)}
+.chip svg{width:11px;height:11px;opacity:.7}
+
+/* 主视图区 */
+#browview{flex:1;min-height:0;position:relative;display:flex;background:#08080a}
+#browframe{flex:1;width:100%;border:none;background:#fff;min-height:0;display:none}
+#browshot{
+  flex:1;position:relative;overflow:hidden;background:#08080a;
+  display:none;align-items:flex-start;justify-content:center;
 }
-#browtools input{
-  flex:1;min-width:80px;padding:7px 9px;border-radius:8px;font-size:12px;
-  background:rgba(0,0,0,.36);border:1px solid var(--stroke);color:var(--text);outline:none;
+#shotimg{
+  width:100%;height:auto;display:block;touch-action:pan-x;
+  cursor:pointer;transition:opacity .18s;-webkit-user-select:none;user-select:none;
 }
-#browshot{flex:1;overflow:auto;background:#0b0b0e;display:none;align-items:flex-start;justify-content:center}
-#shotimg{width:100%;display:block}
+#shotimg.dim{opacity:.55}
+#shotload{
+  position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+  pointer-events:none;
+}
+#shotload.on{display:flex}
+.spin{
+  width:22px;height:22px;border-radius:50%;
+  border:2px solid rgba(255,255,255,.14);border-top-color:var(--accent);
+  animation:spin .7s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* 空状态 */
+#browempty{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:10px;padding:28px 22px;text-align:center;color:var(--dim);
+}
+.be-ico{color:var(--faint);opacity:.5}
+.be-ico svg{width:44px;height:44px;display:block}
+.be-t{font-size:13.5px;color:var(--text-2);font-weight:500}
+.be-sub{font-size:11px;color:var(--faint);line-height:1.6;max-width:260px}
+.be-sites{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:6px}
+.be-sites .chip{font-size:12px;padding:7px 14px}
+.be-tip{font-size:10.5px;color:var(--faint);line-height:1.6;margin-top:10px;max-width:280px}
+.be-tip code{font-family:var(--mono);font-size:10px;background:var(--surface);
+             padding:1px 5px;border-radius:4px;border:1px solid var(--stroke)}
+
+/* 底部输入条 */
+#browtools{
+  display:none;gap:6px;padding:8px 10px;border-top:1px solid var(--stroke);
+  align-items:center;background:var(--bg-2);flex:0 0 auto;
+}
+#shottype{
+  flex:1;min-width:0;padding:8px 11px;border-radius:9px;font-size:12.5px;
+  background:rgba(0,0,0,.4);border:1px solid var(--stroke);color:var(--text);
+  outline:none;font-family:inherit;transition:border-color .18s;
+}
+#shottype:focus{border-color:rgba(217,119,87,.45)}
+.bact{
+  flex:0 0 auto;height:32px;padding:0 11px;border-radius:9px;
+  font-size:11.5px;font-family:inherit;font-weight:500;
+  background:var(--surface);border:1px solid var(--stroke);color:var(--text-2);
+  cursor:pointer;display:grid;place-items:center;transition:all .15s;
+}
+.bact svg{width:14px;height:14px;display:block}
+.bact:active{transform:scale(.95);background:var(--surface-hi)}
+.bact.pri{
+  background:var(--accent-dim);border-color:rgba(217,119,87,.4);color:var(--accent);
+}
+.bact.pri:active{background:rgba(217,119,87,.22)}
 
 /* ── 弹窗 ── */
 .modal{
@@ -731,3 +810,71 @@ body:not(.tab-term) #keys{display:none !important}
                 scrollbar-width:none;-webkit-overflow-scrolling:touch}
 #keys .krow::-webkit-scrollbar{display:none}
 #keys .kbtn{flex:0 0 auto}
+
+/* ── 历史会话按钮：做成看得出来能点的实体按钮（原来只有一行字+一个 ▾）── */
+.ch-iden{
+  flex:1;min-width:0;
+  display:flex;flex-direction:row;align-items:center;gap:9px;
+  width:100%;min-height:0;
+  padding:7px 10px;margin:0;
+  border-radius:10px;cursor:pointer;
+  background:var(--surface);border:1px solid var(--stroke);
+  font-family:inherit;text-align:left;color:inherit;
+  transition:background .16s var(--ease),border-color .16s var(--ease),transform .12s;
+  -webkit-tap-highlight-color:transparent;
+}
+.ch-iden:hover{background:var(--surface-hi);border-color:var(--stroke-hi)}
+.ch-iden:active{transform:scale(.985);background:var(--surface-hi)}
+.ch-hist-ico{
+  flex:0 0 auto;display:grid;place-items:center;
+  width:26px;height:26px;border-radius:8px;
+  background:var(--accent-dim);border:1px solid rgba(217,119,87,.26);
+  color:var(--accent);
+}
+.ch-hist-ico svg{width:15px;height:15px;display:block}
+.ch-iden-t{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.ch-iden .ch-title{
+  font-size:13px;font-weight:600;color:var(--text);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  display:flex;align-items:center;gap:5px;
+}
+.ch-iden .ch-sub{font-size:10px;color:var(--dim);letter-spacing:.02em;
+                 overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ch-iden .ch-sub .sep{opacity:.4;margin:0 4px}
+.ch-count{
+  flex:0 0 auto;min-width:18px;height:18px;padding:0 5px;
+  border-radius:9px;display:grid;place-items:center;
+  font-size:10px;font-weight:700;font-variant-numeric:tabular-nums;
+  background:var(--accent);color:#1a0f0a;
+}
+.ch-iden .caret{font-size:9px;color:var(--faint);flex:0 0 auto;transition:transform .2s}
+.ch-iden:active .caret{transform:translateY(1px)}
+
+/* ── 文件列表：按类型着色 + 大小 ── */
+.frow .sz{
+  margin-left:auto;flex:0 0 auto;font-size:10px;
+  color:var(--faint);font-variant-numeric:tabular-nums;
+  padding-left:8px;
+}
+.frow.code .fi{color:#7fb3e8}
+.frow.img  .fi{color:#c396e0}
+.frow.md   .fi{color:#8fbf9f}
+.frow.zip  .fi{color:#d8a86a}
+.frow.file .nm{flex:1;min-width:0}
+
+/* 工具栏按钮的激活态（项目文件视图） */
+#filebar button.on{
+  background:var(--accent-dim);border-color:rgba(217,119,87,.38);color:var(--accent);
+}
+
+/* ── 宽屏：不要把控件拉成一条线，收成应用窗口的样子 ── */
+@media (min-width:821px){
+  .ch-iden{max-width:440px}
+  /* 面板本身保持全宽（否则两侧会透出下层的终端），只收内部元素 */
+  #browbar{max-width:1040px;margin:0 auto;width:100%;padding:10px 14px;border-radius:0}
+  #browchips{max-width:1040px;margin:0 auto;width:100%;padding:9px 14px}
+  #browview{max-width:1012px;margin:0 auto 12px;width:calc(100% - 28px);
+            border-radius:12px;overflow:hidden;border:1px solid var(--stroke)}
+  #browtools{max-width:1040px;margin:0 auto;width:100%;padding:9px 14px}
+  #shotimg{max-height:none}
+}

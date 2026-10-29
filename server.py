@@ -3,7 +3,7 @@
 注意：psutil / nproc / free 在容器内返回宿主数据，不可采信，配额一律读 cgroup。
 """
 import os, pty, fcntl, termios, struct, asyncio, signal, json, time, re, shutil
-import hashlib, hmac, secrets, base64
+import hashlib, hmac, secrets, base64, ipaddress, socket
 import psutil
 import requests as _requests
 from urllib.parse import urlparse, urlencode, parse_qs
@@ -55,7 +55,13 @@ def _init_auth():
     """
     if AUTH_FILE.exists():
         try:
-            return json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+            d = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+            # 每次启动都收紧权限：发布平台的文件同步可能把它重建成 644
+            try:
+                os.chmod(AUTH_FILE, 0o600)
+            except Exception:
+                pass
+            return d
         except Exception:
             pass
     pwd = os.environ.get("DESK_PASSWORD") or secrets.token_urlsafe(9)
@@ -66,28 +72,48 @@ def _init_auth():
         os.chmod(AUTH_FILE, 0o600)
     except Exception:
         pass
-    print("\n" + "=" * 50, flush=True)
-    print("  首次启动：已生成访问密码", flush=True)
+    # 这是拿到初始密码的唯一途径，必须显示；但明确提示它已进入日志。
+    print("\n" + "=" * 54, flush=True)
+    print("  首次启动：已生成访问密码（只显示这一次）", flush=True)
     print("      " + pwd, flush=True)
-    print("  想自定义密码：启动前设置环境变量 DESK_PASSWORD", flush=True)
-    print("=" * 50 + "\n", flush=True)
+    print("  ⚠ 该密码已写入启动日志，请登录后从日志/终端记录中清除；", flush=True)
+    print("    公网部署请确认已改高强度密码。", flush=True)
+    print("=" * 54 + "\n", flush=True)
     return {"salt": salt, "hash": h}
 
 AUTH = _init_auth()
 SESSIONS: dict = {}          # token -> 过期时间戳
 FAILS: dict = {}             # ip -> [失败次数, 最后失败时间]
-# “记住我”长期令牌：持久化到文件，server 重启后仍可自动续登
+# “记住我”长期令牌：持久化到文件，server 重启后仍可自动续登。
+# 磁盘上只存令牌的 SHA-256：令牌本身等价于登录凭证，明文落盘会被读文件的人直接冒用。
 REMEMBER_FILE = BASE / "remember.json"
 REMEMBERS: dict = {}
 try:
     REMEMBERS = json.loads(REMEMBER_FILE.read_text()) if REMEMBER_FILE.exists() else {}
 except Exception:
     REMEMBERS = {}
+
+
+def _rt_key(rt: str) -> str:
+    return hashlib.sha256(rt.encode()).hexdigest()
+
+
 def _save_remembers():
     try:
         REMEMBER_FILE.write_text(json.dumps(REMEMBERS))
+        try:
+            os.chmod(REMEMBER_FILE, 0o600)
+        except Exception:
+            pass
     except Exception:
         pass
+
+# 迁移：旧版本把长期令牌明文写在这里。发现非 SHA-256 格式的 key 直接作废，
+# 代价是已登录设备要重新输一次密码 —— 明文令牌泄露的风险远大于这点不便。
+if any(not re.fullmatch(r"[0-9a-f]{64}", k or "") for k in REMEMBERS):
+    REMEMBERS = {}
+    _save_remembers()
+
 SESSION_TTL = 30 * 24 * 3600      # 普通登录会话 30 天有效（手机端点开即用）
 REMEMBER_TTL = 180 * 24 * 3600    # “记住我”长期令牌 180 天
 MAX_FAIL, FAIL_WINDOW = 5, 300
@@ -171,7 +197,7 @@ async def login(request: Request):
         # “记住我”：签发长期令牌，前端存 localStorage，重启/过期后自动续登
         if body.get("remember"):
             rt = secrets.token_urlsafe(32)
-            REMEMBERS[rt] = time.time() + REMEMBER_TTL
+            REMEMBERS[_rt_key(rt)] = time.time() + REMEMBER_TTL
             _save_remembers()
             payload["remember"] = rt
         # 注意：必须先拼好 body 再建 Response —— 之前在这里重建 Response
@@ -198,11 +224,12 @@ async def auto_login(request: Request):
         stored = json.loads(REMEMBER_FILE.read_text()) if REMEMBER_FILE.exists() else {}
     except Exception:
         stored = {}
-    exp = stored.get(rt) or REMEMBERS.get(rt)
+    rk = _rt_key(rt)
+    exp = stored.get(rk) or REMEMBERS.get(rk)
     if not exp or exp < time.time():
         if rt:
-            stored.pop(rt, None)
-            REMEMBERS.pop(rt, None)
+            stored.pop(rk, None)
+            REMEMBERS.pop(rk, None)
             try:
                 REMEMBER_FILE.write_text(json.dumps(stored))
             except Exception:
@@ -224,10 +251,14 @@ async def logout(request: Request):
                 stored = json.loads(REMEMBER_FILE.read_text()) if REMEMBER_FILE.exists() else {}
             except Exception:
                 stored = {}
-            stored.pop(rt, None)
-            REMEMBERS.pop(rt, None)
+            stored.pop(_rt_key(rt), None)
+            REMEMBERS.pop(_rt_key(rt), None)
             try:
                 REMEMBER_FILE.write_text(json.dumps(stored))
+                try:
+                    os.chmod(REMEMBER_FILE, 0o600)
+                except Exception:
+                    pass
             except Exception:
                 pass
     except Exception:
@@ -708,7 +739,8 @@ def _strip_frame_headers(headers):
         h.pop(k.lower(), None)
     return h
 
-async def _do_proxy(url: str, request: Request, rewrite_port: int = None):
+async def _do_proxy(url: str, request: Request, rewrite_port: int = None,
+                    allow_redirects: bool = True):
     # 转发时去掉网关的 sharecode，避免泄漏给上游；保留其它原始 query
     q = request.url.query
     if "sharecode=" in q:
@@ -719,7 +751,7 @@ async def _do_proxy(url: str, request: Request, rewrite_port: int = None):
         resp = await loop.run_in_executor(
             None,
             lambda: _requests.get(url, timeout=12, stream=True,
-                                 allow_redirects=True,
+                                 allow_redirects=allow_redirects,
                                  headers={"User-Agent": "Mozilla/5.0 (cloud-preview)"})
         )
     except Exception as e:
@@ -761,16 +793,82 @@ async def preview(port: int, rest: str, request: Request):
     target = f"http://127.0.0.1:{port}/{rest}"
     return await _do_proxy(target, request, rewrite_port=port)
 
+# ── SSRF 防护 ──────────────────────────────────────────────────────────────
+# /preview 是设计上就要访问本机端口的，不做限制；但 /proxy 能访问任意外网 URL，
+# 一旦部署在云主机上，攻击者可借它打到 169.254.169.254 拿到实例角色凭证。
+# 所以这里必须：解析出真实 IP 后按网段判定，而不是只比对主机名字符串。
+# 只比字符串会被这些绕过：2852039166（十进制）、::ffff:169.254.169.254（IPv6 映射）、
+# metadata.google.internal（云厂商域名）、0177.0.0.1（八进制）。
+
+_PRIVATE_NETS = []
+for _n in ("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+           "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+           "192.88.99.0/24", "192.168.0.0/16", "198.18.0.0/15",
+           "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4"):
+    _PRIVATE_NETS.append(ipaddress.ip_network(_n))
+for _n in ("::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8", "64:ff9b::/96"):
+    _PRIVATE_NETS.append(ipaddress.ip_network(_n))
+
+# 云厂商元数据域名（解析前先拦一道，避免内部 DNS 把它们指到内网）
+_META_HOSTS = ("metadata.google.internal", "metadata.goog", "metadata",
+               "instance-data", "instance-data.ec2.internal", "nova",
+               "metadata.azure.com", "100.100.100.200")
+
+# 纯内网部署时才打开：DESK_PROXY_ALLOW_PRIVATE=1
+ALLOW_PRIVATE = os.environ.get("DESK_PROXY_ALLOW_PRIVATE", "").strip() in ("1", "true", "yes")
+
+
+def _is_blocked_ip(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str.strip().strip("[]"))
+    except ValueError:
+        return True
+    # IPv4 映射的 IPv6（::ffff:169.254.169.254）等价于那个 IPv4，按同样规则判
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    return any(ip in net for net in _PRIVATE_NETS)
+
+
+def _ssrf_check(url: str):
+    """返回 None 表示放行，否则返回错误说明。"""
+    host = (urlparse(url).hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return "无法解析主机名"
+    hl = host
+    if hl in _META_HOSTS or hl.endswith(".internal") or hl.endswith(".local"):
+        return "禁止访问内网/元数据地址"
+    # IP 字面量（含十进制、八进制写法，ipaddress 都能正确解析）
+    try:
+        ipaddress.ip_address(hl.strip("[]"))
+        return "禁止访问内网地址" if _is_blocked_ip(hl) else None
+    except ValueError:
+        pass
+    # 域名：解析出所有 A/AAAA 逐个判定
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        return "域名解析失败"
+    ips = {ai[4][0] for ai in infos}
+    if not ips:
+        return "域名解析失败"
+    for ip in ips:
+        if _is_blocked_ip(ip):
+            return "禁止访问内网地址"
+    return None
+
+
 @app.get("/proxy")
 async def proxy(request: Request, url: str = ""):
     if not authed(request.cookies.get("session")):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     if not url.startswith(("http://", "https://")):
         return JSONResponse({"error": "仅支持 http/https"}, status_code=400)
-    host = (urlparse(url).hostname or "").lower()
-    if host == "169.254.169.254":
-        return JSONResponse({"error": "禁止访问元数据地址"}, status_code=403)
-    return await _do_proxy(url, request)
+    if not ALLOW_PRIVATE:
+        bad = _ssrf_check(url)
+        if bad:
+            return JSONResponse({"error": bad}, status_code=403)
+    # 不跟随重定向：否则目标可用 302 把请求引到 169.254.169.254 绕过上面所有检查
+    return await _do_proxy(url, request, allow_redirects=False)
 
 # ─────────────── 文件管理 API（文件管理器 + AI 改代码共用） ───────────────
 # 仅本地脚本 / Agent 驱动 bridge 使用，与用户登录 session 隔离。
@@ -808,25 +906,61 @@ def _safe_path(p: str):
     except Exception:
         return None
 
+# 文件管理器默认落在工作区（/workspace），而不是项目自身目录 —— 用户要看的是自己的文件。
+# 但老调用方可能传相对路径（相对项目根），所以两条根都要能解析，且都不能越界。
+def _safe_fs(p: str):
+    p = p or "."
+    try:
+        if os.path.isabs(p):
+            roots = [WS_ROOT, BASE]
+            for r in roots:
+                try:
+                    t = Path(p).resolve()
+                except Exception:
+                    return None
+                rr = r.resolve()
+                if t == rr or str(t).startswith(str(rr) + os.sep):
+                    return t
+            return None
+        t = (BASE / p).resolve()
+        if t == BASE.resolve() or str(t).startswith(str(BASE.resolve()) + os.sep):
+            return t
+        return None
+    except Exception:
+        return None
+
+
+# 永远不展示的噪音目录（构建产物、缓存、版本库）
+NOISE_DIRS = {"node_modules", "__pycache__", ".venv", "venv", ".git",
+              ".mypy_cache", ".pytest_cache", "dist", "build", ".next"}
+# 项目自身目录名：出现在工作区根时默认折叠，避免用户一进来看到的是 server.py
+SELF_DIR = BASE.name
+
+
 @app.get("/api/fs/list")
-async def fs_list(request: Request, path: str = "."):
+async def fs_list(request: Request, path: str = ".", show_self: int = 0):
     if not authed(request.cookies.get("session")):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    d = _safe_path(path)
+    d = _safe_fs(path)
     if not d or not d.exists():
         return JSONResponse({"error": "路径不存在"})
     try:
         if d.is_file():
-            return {"items": [{"name": d.name, "type": "file", "size": d.stat().st_size}]}
-        items = []
+            return {"items": [{"name": d.name, "type": "file", "size": d.stat().st_size}],
+                    "hidden": []}
+        items, hidden = [], []
         for e in sorted(os.listdir(d)):
-            if e.startswith("."):
+            if e.startswith(".") or e in NOISE_DIRS:
+                continue
+            # 工作区根目录下的项目本体：默认隐藏，前端「显示项目文件」开关可打开
+            if (not show_self) and d.resolve() == WS_ROOT.resolve() and e == SELF_DIR:
+                hidden.append(e)
                 continue
             fp = d / e
             st = fp.stat()
             items.append({"name": e, "type": "dir" if fp.is_dir() else "file",
                           "size": st.st_size if fp.is_file() else 0})
-        return {"items": items}
+        return {"items": items, "hidden": hidden}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 
@@ -898,7 +1032,10 @@ async def fs_mkdir(request: Request):
 
 # ─────────────── AI Bridge（WorkBuddy Agent 从本地驱动，免用户登录） ───────────────
 def _bridge_ok(request: Request):
-    return request.query_params.get("bridge") == BRIDGE_SECRET
+    """优先从请求头取（不进 URL / 日志 / Referer），兼容旧调用方的 query 参数。
+    用 compare_digest 做恒定时间比较，避免被计时侧信道逐字节猜出密钥。"""
+    got = request.headers.get("x-bridge-secret") or request.query_params.get("bridge") or ""
+    return hmac.compare_digest(got, BRIDGE_SECRET)
 
 @app.get("/api/chat/inbox")
 async def chat_inbox(request: Request):
@@ -1291,7 +1428,7 @@ async def _br_page(token, w=430, h=900):
             user_agent=("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
                         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 "
                         "Mobile/15E148 Safari/604.1"),
-            is_mobile=True, has_touch=True)
+            is_mobile=True, has_touch=True, device_scale_factor=2)
         pg = await ctx.new_page()
         _BR["pages"][token] = pg
     return pg
@@ -1319,8 +1456,14 @@ async def br_goto(request: Request, u: str = "", url: str = "", w: int = 430, h:
         pg = await _br_page(tok, w, h)
         await pg.set_viewport_size({"width": w, "height": h})
         await pg.goto(target, timeout=20000, wait_until="domcontentloaded")
+        # 等网络基本静默再截图：否则图片/广告把布局推走，
+        # 用户看到的截图和实际 DOM 位置对不上，点击就会点偏。
         try:
-            await pg.wait_for_timeout(700)
+            await pg.wait_for_load_state("networkidle", timeout=2500)
+        except Exception:
+            pass
+        try:
+            await pg.wait_for_timeout(400)
         except Exception:
             pass
         png = await pg.screenshot(type="png")
@@ -1337,7 +1480,9 @@ async def br_click(request: Request, x: int, y: int):
     if pg is None:
         return JSONResponse({"error": "无会话"}, status_code=400)
     try:
-        await pg.mouse.click(x, y)
+        # 关键：context 是 is_mobile + has_touch，移动版页面监听 touch 事件，
+        # 用 mouse.click 点输入框不会聚焦（实测百度/知乎都是这样）。
+        await pg.touchscreen.tap(x, y)
         await pg.wait_for_timeout(800)
         png = await pg.screenshot(type="png")
         return Response(content=png, media_type="image/png", headers=_png(pg.url))
@@ -1345,7 +1490,7 @@ async def br_click(request: Request, x: int, y: int):
         return JSONResponse({"error": str(e)}, status_code=502)
 
 @app.get("/api/browser/type")
-async def br_type(request: Request, text: str):
+async def br_type(request: Request, text: str, enter: int = 0):
     tok = request.cookies.get("session")
     if not authed(tok):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1353,7 +1498,10 @@ async def br_type(request: Request, text: str):
     if pg is None:
         return JSONResponse({"error": "无会话"}, status_code=400)
     try:
-        await pg.keyboard.type(text, delay=15)
+        if text:
+            await pg.keyboard.type(text, delay=15)
+        if enter:
+            await pg.keyboard.press("Enter")
         await pg.wait_for_timeout(300)
         png = await pg.screenshot(type="png")
         return Response(content=png, media_type="image/png", headers=_png(pg.url))
@@ -1385,7 +1533,7 @@ async def br_scroll(request: Request, dy: int = 600):
     if pg is None:
         return JSONResponse({"error": "无会话"}, status_code=400)
     try:
-        await pg.mouse.wheel(0, dy)
+        await pg.evaluate("(d) => window.scrollBy({top: d, behavior: 'instant'})", dy)
         await pg.wait_for_timeout(500)
         png = await pg.screenshot(type="png")
         return Response(content=png, media_type="image/png", headers=_png(pg.url))

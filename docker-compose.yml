@@ -8,8 +8,10 @@ services:
     ports:
       - "8080:8080"
     environment:
-      # 首次启动的访问密码；留空则自动生成并打印在日志里
-      DESK_PASSWORD: "change-me-please"
+      # 访问密码。故意不写默认值：${VAR:?} 表示未设置时直接启动失败并提示，
+      # 避免把 "change-me" 这类示例口令带进真实部署（它曾出现在公开仓库里）。
+      # 用法：DESK_PASSWORD=你的密码 docker compose up -d
+      DESK_PASSWORD: "${DESK_PASSWORD:?请在 .env 或环境变量中设置 DESK_PASSWORD}"
       WORKSPACE_ROOT: "/workspace"
     volumes:
       # 左边是你宿主机上的项目目录，右边固定为容器工作区

@@ -123,10 +123,15 @@
 <section class="tab-panel" id="tab-chat" style="display:none">
   <div id="chathead">
     <div class="ch-top">
-      <div class="ch-iden" id="chiden" title="查看全部会话">
-        <div class="ch-title"><span id="chtitle">新对话</span><span class="caret">▾</span></div>
-        <div class="ch-sub"><span id="chmeta">暂无消息</span><span class="sep">·</span><span id="chprov">平台通道</span></div>
-      </div>
+      <button class="ch-iden" id="chiden" title="查看全部会话">
+        <span class="ch-hist-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.2 4.6v4.2h4.2"/><path d="M12 7.8V12l3 1.8"/></svg></span>
+        <span class="ch-iden-t">
+          <span class="ch-title"><span id="chtitle">新对话</span></span>
+          <span class="ch-sub"><span id="chmeta">暂无消息</span><span class="sep">·</span><span id="chprov">平台通道</span></span>
+        </span>
+        <span class="ch-count" id="chcount" hidden>0</span>
+        <span class="caret">▾</span>
+      </button>
       <button class="btn-new" id="btnnew"><span class="plus">+</span>新对话</button>
     </div>
     <div class="ch-chips">
@@ -155,10 +160,11 @@
 <section class="tab-panel" id="tab-files" style="display:none">
   <div id="filebar">
     <button onclick="fmRoot()" title="根目录"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9.5V21h13V9.5"/></svg> 根目录</button>
+    <button id="btnview" onclick="fmToggleView()" title="当前：工作区，点此查看项目源码"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg> 项目文件</button>
     <button onclick="fmRefresh()" title="刷新"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg></button>
     <button onclick="fmNewFile()"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> 新建</button>
     <button onclick="fmUpload()"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m6 11 6-6 6 6"/></svg> 上传</button>
-    <span id="filebadge" style="margin-left:auto;font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/workspace/webos</span>
+    <span id="filebadge" style="margin-left:auto;font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">/workspace</span>
     <input type="file" id="fmfile" style="display:none" onchange="fmUploadDo(this)">
   </div>
   <div id="filemain">
@@ -206,29 +212,52 @@
 
 <!-- 标签四：浏览 / 端口预览（在终端跑起的服务，这里直接看） -->
 <section class="tab-panel" id="tab-browse" style="display:none">
+  <!-- 顶部：仿真实浏览器的地址栏（后退 / 引擎 / 地址 / 刷新 / 外开） -->
   <div id="browbar">
-    <button id="browback" title="后退">‹</button>
-    <select id="browengine" title="搜索引擎">
-      <option value="baidu">百度</option>
-      <option value="bing">Bing</option>
-      <option value="google">Google</option>
-    </select>
-    <input id="browaddr" placeholder="搜索词 / 网址 / 端口(8000)">
-    <button id="browgo">前往</button>
-    <button id="brownew" title="在新标签打开">↗</button>
+    <button id="browback" class="bico" title="后退" aria-label="后退">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5 8 12l7 7"/></svg>
+    </button>
+    <div class="baddr">
+      <button id="browengine" class="beng" title="切换搜索引擎">百度</button>
+      <input id="browaddr" placeholder="搜索或输入网址" spellcheck="false" autocomplete="off" autocapitalize="off">
+      <button id="browclear" class="bx" title="清空" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 7l10 10M17 7 7 17"/></svg>
+      </button>
+    </div>
+    <button id="browreload" class="bico" title="刷新" aria-label="刷新">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>
+    </button>
+    <button id="brownew" class="bico" title="在系统浏览器打开" aria-label="外部打开">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18 14v4.5A1.5 1.5 0 0 1 16.5 20h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></svg>
+    </button>
   </div>
-  <div id="browchips"><span class="hint">在 💻 终端运行 <b>python3 -m http.server 8000</b> 后，点下方检测到的端口（或输入 8000）即可预览。也能贴外网网址/搜索词在此内置浏览。</span></div>
+
+  <div id="browchips"></div>
+
+  <div id="browview">
+    <div id="browempty">
+      <div class="be-ico">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18z"/></svg>
+      </div>
+      <div class="be-t">输入网址，或从快捷站点开始</div>
+      <div class="be-sub">网页在内置的隔离浏览器里渲染，点击/滑动即可操作</div>
+      <div class="be-sites" id="besites"></div>
+      <div class="be-tip">在 💻 终端跑 <code>python3 -m http.server 8000</code>，上方会出现 <b>8000</b> 端口入口</div>
+    </div>
+    <div id="browshot">
+      <img id="shotimg" alt="" draggable="false">
+      <div id="shotload"><span class="spin"></span></div>
+    </div>
+    <iframe id="browframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals" referrerpolicy="no-referrer"></iframe>
+  </div>
+
   <div id="browtools">
-    <button onclick="shotBack()">‹</button>
-    <button onclick="shotReload()">⟳</button>
-    <button onclick="shotScroll(-650)">↑</button>
-    <button onclick="shotScroll(650)">↓</button>
-    <input id="shottype" placeholder="先点页面输入框，再在此输入">
-    <button onclick="shotType()">输入</button>
-    <button onclick="shotKey('Enter')">回车</button>
+    <input id="shottype" placeholder="输入到页面焦点处…" autocomplete="off" autocapitalize="off">
+    <button id="btntype" class="bact" title="只键入，不回车">键入</button>
+    <button id="btnenter" class="bact pri" title="回车提交">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 5v7a3 3 0 0 1-3 3H5"/><path d="m9 11-4 4 4 4"/></svg>
+    </button>
   </div>
-  <div id="browshot"><img id="shotimg" alt="页面加载中…"></div>
-  <iframe id="browframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals" referrerpolicy="no-referrer"></iframe>
 </section>
 
 <div id="tabbar">
@@ -304,7 +333,7 @@
 <div id="boot">
   <div>正在建立 PTY 会话…</div>
   <div style="font-size:11.5px;opacity:.6">连接真实 shell</div>
-  <div style="font-size:10px;opacity:.35;margin-top:6px">build v16 · 若长时间停留请截图此版本号</div>
+  <div style="font-size:10px;opacity:.35;margin-top:6px">build v17 · 若长时间停留请截图此版本号</div>
 </div>
 
 <script>
@@ -647,13 +676,32 @@ function fmMode(p){
   if (/\.html?$/.test(p) || /\.xml$/.test(p)) return 'text/html';
   return 'text/plain';
 }
-const TREE_ROOT = '/workspace/webos';
+// 默认展示工作区（用户自己的文件），项目自身目录默认折叠；
+// 点工具栏「项目文件」可切到项目源码视图。
+const WS_ROOT   = '/workspace';
+const PROJ_ROOT = '/workspace/webos';
+let TREE_ROOT = WS_ROOT;
+let showSelf = false;
 const ICO_DIR = '<svg class="fi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2.5h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 const ICO_FILE = '<svg class="fi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
 
+function extClass(n){
+  const e = (n.split('.').pop() || '').toLowerCase();
+  if (['py','js','ts','jsx','tsx','go','rs','c','h','cpp','java','rb','php','sh','sql','json','yml','yaml','toml','css','html'].includes(e)) return 'code';
+  if (['png','jpg','jpeg','gif','webp','svg','ico','bmp'].includes(e)) return 'img';
+  if (['md','txt','rst','log'].includes(e)) return 'md';
+  if (['zip','gz','tar','tgz','7z','rar','patch','diff'].includes(e)) return 'zip';
+  return '';
+}
+function fmtSize(b){
+  if (!b) return '';
+  if (b < 1024) return b + 'B';
+  if (b < 1048576) return Math.round(b / 1024) + 'K';
+  return (b / 1048576).toFixed(1) + 'M';
+}
 async function fmRender(path, container, depth){
   try{
-    const r = await fetch('/api/fs/list?path=' + encodeURIComponent(path));
+    const r = await fetch('/api/fs/list?path=' + encodeURIComponent(path) + (showSelf ? '&show_self=1' : ''));
     const j = await r.json();
     if (j.error){ alert(j.error); return; }
     container.innerHTML = '';
@@ -678,9 +726,10 @@ async function fmRender(path, container, depth){
         container.appendChild(kids);
       } else {
         const row = document.createElement('div');
-        row.className = 'frow file';
+        row.className = 'frow file ' + extClass(it.name);
         row.style.paddingLeft = (6 + depth * 14) + 'px';
-        row.innerHTML = ICO_FILE + '<span class="nm">' + esc(it.name) + '</span>';
+        row.innerHTML = ICO_FILE + '<span class="nm">' + esc(it.name) + '</span>'
+                      + (it.size ? '<span class="sz">' + fmtSize(it.size) + '</span>' : '');
         row.onclick = () => fmOpen(np);
         container.appendChild(row);
       }
@@ -692,6 +741,17 @@ function fmRoot(){
   fmRender(TREE_ROOT, document.getElementById('filetree'), 0);
 }
 function fmRefresh(){ fmRoot(); }
+// 在工作区与项目源码之间切换；工作区视图默认折叠项目自身目录
+function fmToggleView(){
+  showSelf = !showSelf;
+  TREE_ROOT = showSelf ? PROJ_ROOT : WS_ROOT;
+  const b = document.getElementById('btnview');
+  if (b){
+    b.classList.toggle('on', showSelf);
+    b.title = showSelf ? '当前：项目源码，点此回到工作区' : '当前：工作区，点此查看项目源码';
+  }
+  fmRoot();
+}
 function fmCloseEditor(){
   if (cm){ const el = cm.getWrapperElement(); if (el) el.remove(); cm = null; }
   document.getElementById('editorpane').style.display = 'none';
@@ -753,104 +813,235 @@ async function fmUploadDo(input){
 }
 
 /* ───────── 浏览 / 端口预览 / 截图浏览器 ───────── */
+const ENGINES = [
+  {k:'baidu',  n:'百度', f:q=>'https://www.baidu.com/s?wd=' + encodeURIComponent(q)},
+  {k:'bing',   n:'必应', f:q=>'https://www.bing.com/search?q=' + encodeURIComponent(q)},
+  {k:'google', n:'谷歌', f:q=>'https://www.google.com/search?q=' + encodeURIComponent(q)},
+];
+let engIdx = 0;
+try {
+  const _e = localStorage.getItem('cw_engine');
+  const _i = ENGINES.findIndex(x => x.k === _e);
+  if (_i >= 0) engIdx = _i;
+} catch(_){}
+
+const SITES = [
+  {n:'百度',   u:'https://www.baidu.com'},
+  {n:'必应',   u:'https://www.bing.com'},
+  {n:'GitHub', u:'https://github.com'},
+  {n:'知乎',   u:'https://www.zhihu.com'},
+  {n:'HN',     u:'https://news.ycombinator.com'},
+];
+
 let browHist = [], browIdx = -1, browMode = 'idle';
+let shotW = 390, shotH = 780, shotLastUrl = '', shotBusy = false;
+
+function paintEngine(){
+  const b = $('browengine');
+  if (b) b.textContent = ENGINES[engIdx].n;
+}
+
 function setBrowMode(m){
   browMode = m;
-  document.getElementById('browframe').style.display  = (m === 'iframe') ? 'block' : 'none';
-  document.getElementById('browshot').style.display   = (m === 'shot') ? 'flex' : 'none';
-  document.getElementById('browtools').style.display  = (m === 'shot') ? 'flex' : 'none';
+  const frame = $('browframe'), shot = $('browshot'),
+        tools = $('browtools'), empty = $('browempty');
+  if (frame) frame.style.display = (m === 'iframe') ? 'block' : 'none';
+  if (shot)  shot.style.display  = (m === 'shot')   ? 'flex'  : 'none';
+  if (tools) tools.style.display = (m === 'shot')   ? 'flex'  : 'none';
+  if (empty) empty.style.display = (m === 'idle')   ? 'flex'  : 'none';
 }
+
 function browFromInput(){
-  const v = document.getElementById('browaddr').value.trim();
+  const v = ($('browaddr').value || '').trim();
   if (!v) return null;
-  if (/^\d+$/.test(v)) return {port: parseInt(v, 10)};
+  if (/^\d{2,5}$/.test(v)) return {port: parseInt(v, 10)};
   let m = v.match(/^(?:https?:\/\/)?(?:127\.0\.0\.1|localhost):(\d+)(?:\/.*)?$/i);
   if (m) return {port: parseInt(m[1], 10)};
-  if (/[\u4e00-\u9fa5]/.test(v) || /\s/.test(v)) return {search: v};
   if (/^https?:\/\//i.test(v)) return {url: v};
-  if (/^[\w-]+(\.[\w-]+)+/.test(v)) return {url: 'https://' + v};
+  // 形如 example.com / sub.example.com/path 才当网址，其余一律当搜索词
+  if (/^[\w-]+(\.[\w-]+)+(:\d+)?([\/?#].*)?$/.test(v)) return {url: 'https://' + v};
   return {search: v};
 }
-let shotLastUrl = '';
+
+function curEngine(){ return ENGINES[engIdx]; }
+
+function viewSize(){
+  const box = $('browview');
+  const r = box ? box.getBoundingClientRect() : {width:390, height:760};
+  return {w: Math.max(320, Math.round(r.width)),
+          h: Math.max(420, Math.round(r.height))};
+}
+
+function shotLoading(on){
+  shotBusy = !!on;
+  const l = $('shotload'), img = $('shotimg');
+  if (l) l.classList.toggle('on', !!on);
+  if (img) img.classList.toggle('dim', !!on);
+}
+
 function shotUpdate(path){
-  const img = document.getElementById('shotimg');
+  const img = $('shotimg');
+  if (!img) return;
+  shotLoading(true);
   img.src = sc(path + (path.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now());
 }
+
 function shotGoto(url){
   setBrowMode('shot');
   shotLastUrl = url;
-  // URL 走 base64，绕开公网 WAF 对外链明文的拦截
-  shotUpdate('/api/browser/goto?u=' + encodeURIComponent(b64enc(url)) + '&w=430&h=900');
+  const s = viewSize(); shotW = s.w; shotH = s.h;
+  $('browaddr').value = url;
+  syncClearBtn();
+  shotUpdate('/api/browser/goto?u=' + encodeURIComponent(b64enc(url))
+             + '&w=' + s.w + '&h=' + s.h);
 }
+
 function shotBack(){ shotUpdate('/api/browser/back'); }
 function shotReload(){ if (shotLastUrl) shotGoto(shotLastUrl); }
 function shotScroll(dy){ shotUpdate('/api/browser/scroll?dy=' + dy); }
-function shotType(){
-  const el = document.getElementById('shottype'); const t = el.value; if (!t) return;
-  shotUpdate('/api/browser/type?text=' + encodeURIComponent(t)); el.value = '';
+
+// 键入（可选回车）。两个动作合成一次请求，避免连续 img.src 互相取消
+function shotTypeSend(submit){
+  const el = $('shottype');
+  const t = el ? el.value : '';
+  if (!t && !submit) return;
+  if (el) el.value = '';
+  shotUpdate('/api/browser/type?text=' + encodeURIComponent(t) + (submit ? '&enter=1' : ''));
 }
-function shotKey(k){ shotUpdate('/api/browser/key?name=' + encodeURIComponent(k)); }
-const SEARCH_ENGINES = {
-  baidu:  q => 'https://www.baidu.com/s?wd=' + encodeURIComponent(q),
-  bing:   q => 'https://www.bing.com/search?q=' + encodeURIComponent(q),
-  google: q => 'https://www.google.com/search?q=' + encodeURIComponent(q),
-};
-function curEngine(){
-  const s = document.getElementById('browengine');
-  return (s && s.value && SEARCH_ENGINES[s.value]) ? s.value : 'baidu';
-}
+
 function browShow(t){
   if (t.port != null){
     setBrowMode('iframe');
     const u = sc('/preview/' + t.port + '/');
-    document.getElementById('browframe').src = u;
-    document.getElementById('brownew').onclick = () => window.open(u, '_blank');
+    $('browframe').src = u;
+    $('browaddr').value = 'localhost:' + t.port;
+    syncClearBtn();
+    $('brownew').onclick = () => window.open(u, '_blank');
   } else {
-    let url = t.url || SEARCH_ENGINES[curEngine()](t.search || '');
+    let url = t.url || curEngine().f(t.search || '');
     shotGoto(url);
-    document.getElementById('brownew').onclick = () => window.open(url, '_blank');
+    $('brownew').onclick = () => window.open(url, '_blank');
   }
 }
+
 function browGo(){
   const t = browFromInput(); if (!t) return;
-  browHist.push(t); browIdx = browHist.length - 1; browShow(t);
+  $('browaddr').blur();
+  // 新导航截断前进历史，避免"后退"回到已废弃分支
+  browHist = browHist.slice(0, browIdx + 1);
+  browHist.push(t); browIdx = browHist.length - 1;
+  browShow(t);
 }
+
+function syncClearBtn(){
+  const inp = $('browaddr'), clr = $('browclear');
+  if (inp && clr) clr.hidden = !inp.value;
+}
+
+/* 快捷站点（空状态） */
+function paintSites(){
+  const box = $('besites');
+  if (!box || box.childElementCount) return;
+  SITES.forEach(s => {
+    const b = document.createElement('button');
+    b.className = 'chip'; b.textContent = s.n;
+    b.onclick = () => { $('browaddr').value = s.u; browGo(); };
+    box.appendChild(b);
+  });
+}
+
 async function browLoadPorts(){
   try{
     const r = await fetch('/api/ports'); const j = await r.json();
-    const c = document.getElementById('browchips');
-    const list = j.ports || [];
-    c.innerHTML = '<span class="hint">' + (list.length
-      ? '检测到你新起的服务（点一下即可预览）：'
-      : '在上面输入<b>搜索词</b>可直接搜索，输入<b>网址</b>可打开网页；在 💻 终端跑 <b>python3 -m http.server 8000</b> 后，端口会自动出现在这里。') + '</span>';
-    list.forEach(p=>{
-      if (p === 22) return;
-      const b = document.createElement('button'); b.className = 'chip'; b.textContent = '🔌 ' + p;
-      b.onclick = () => { document.getElementById('browaddr').value = String(p); browGo(); };
+    const c = $('browchips');
+    const list = (j.ports || []).filter(p => p !== 22);
+    if (!list.length){ c.innerHTML = ''; return; }
+    c.innerHTML = '<span class="hint">本地服务：</span>';
+    list.forEach(p => {
+      const b = document.createElement('button');
+      b.className = 'chip';
+      b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 7H6a4 4 0 0 0 0 8h3"/><path d="M15 7h3a4 4 0 0 1 0 8h-3"/><path d="M8.5 12h7"/></svg>' + p;
+      b.onclick = () => { $('browaddr').value = String(p); browGo(); };
       c.appendChild(b);
     });
   }catch(e){}
 }
-document.getElementById('browgo').onclick = browGo;
-try {
-  const _e = localStorage.getItem('cw_engine');
-  if (_e && SEARCH_ENGINES[_e]) document.getElementById('browengine').value = _e;
-} catch(_){}
-document.getElementById('browengine').addEventListener('change', e => {
-  try { localStorage.setItem('cw_engine', e.target.value); } catch(_){}
+
+/* ── 截图上的直接交互：点击 = 点页面，滑动 = 滚页面 ── */
+function bindShot(){
+  const img = $('shotimg');
+  if (!img) return;
+  let suppressClick = false;
+
+  img.addEventListener('load', () => shotLoading(false));
+  img.addEventListener('error', function(){
+    shotLoading(false);
+    this.alt = '';
+    const t = $('browchips');
+    if (t) t.innerHTML = '<span class="hint">加载失败：可能超时或被目标站拦截，试试点右上角 ↗ 用系统浏览器打开。</span>';
+  });
+
+  img.addEventListener('click', e => {
+    if (suppressClick){ suppressClick = false; return; }
+    if (shotBusy) return;
+    const rect = img.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const x = Math.round((e.clientX - rect.left) / rect.width  * shotW);
+    const y = Math.round((e.clientY - rect.top ) / rect.height * shotH);
+    shotUpdate('/api/browser/click?x=' + x + '&y=' + y);
+  });
+
+  let sy = 0, dy = 0, dragging = false;
+  img.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) return;
+    dragging = true; sy = e.touches[0].clientY; dy = 0;
+    img.style.transition = 'none';
+  }, {passive:true});
+  img.addEventListener('touchmove', e => {
+    if (!dragging) return;
+    dy = e.touches[0].clientY - sy;
+    // 手指跟手位移做阻尼，给人"抓住页面"的反馈
+    img.style.transform = 'translateY(' + (dy * 0.45) + 'px)';
+  }, {passive:true});
+  img.addEventListener('touchend', () => {
+    if (!dragging) return;
+    dragging = false;
+    img.style.transition = 'transform .2s cubic-bezier(.2,.8,.2,1)';
+    img.style.transform = '';
+    if (Math.abs(dy) > 12){
+      suppressClick = true;
+      if (Math.abs(dy) > 34) shotScroll(Math.round(-dy * 1.8));
+    }
+    dy = 0;
+  }, {passive:true});
+}
+
+/* ── 事件绑定（统一在 initBrowse 里跑，确保 DOM 与 $ 已就绪）── */
+function initBrowse(){
+bindShot();
+$('browengine').onclick = () => {
+  engIdx = (engIdx + 1) % ENGINES.length;
+  paintEngine();
+  try { localStorage.setItem('cw_engine', ENGINES[engIdx].k); } catch(_){}
+  const t = browFromInput();
+  if (t && t.search) browGo();   // 改了引擎且当前是搜索词，立刻用新引擎重搜
+};
+$('browaddr').addEventListener('keydown', e => { if (e.key === 'Enter') browGo(); });
+$('browaddr').addEventListener('input', syncClearBtn);
+$('browclear').onclick = () => {
+  $('browaddr').value = ''; syncClearBtn(); $('browaddr').focus();
+};
+$('browback').onclick = () => { if (browIdx > 0){ browIdx--; browShow(browHist[browIdx]); } };
+$('browreload').onclick = () => { if (browMode === 'iframe') $('browframe').src = $('browframe').src; else shotReload(); };
+$('btntype').onclick = () => shotTypeSend(false);
+$('btnenter').onclick = () => shotTypeSend(true);
+$('shottype').addEventListener('keydown', e => {
+  if (e.key === 'Enter'){ e.preventDefault(); shotTypeSend(true); }
 });
-document.getElementById('browaddr').addEventListener('keydown', e => { if (e.key === 'Enter') browGo(); });
-document.getElementById('browback').onclick = () => { if (browIdx > 0){ browIdx--; browShow(browHist[browIdx]); } };
-document.getElementById('shotimg').addEventListener('click', e => {
-  const img = e.currentTarget, rect = img.getBoundingClientRect();
-  if (!rect.width) return;
-  const x = Math.round((e.clientX - rect.left) * (430 / rect.width));
-  const y = Math.round((e.clientY - rect.top) * (900 / rect.height));
-  shotUpdate('/api/browser/click?x=' + x + '&y=' + y);
-});
-document.getElementById('shotimg').addEventListener('error', function(){
-  this.alt = '加载失败（可能超时或被目标站拦截）—— 点 ↗ 用系统浏览器打开';
-});
+paintEngine();
+paintSites();
+syncClearBtn();
+}
 
 /* ───────── 对话 ───────── */
 let chatWS = '/workspace';
@@ -1009,6 +1200,13 @@ function paintEmpty(){
 }
 
 /* ── 顶栏 ── */
+// 历史会话数量徽标：>0 时才显示，让「这里点得开」一眼可见
+function paintConvCount(){
+  const el = $('chcount'); if (!el) return;
+  const n = (convs || []).length;
+  el.textContent = n > 99 ? '99+' : String(n);
+  el.hidden = n === 0;
+}
 function paintHead(){
   const t = curConv ? (curConv.title || '新对话') : '新对话';
   $('chtitle').textContent = t;
@@ -1029,6 +1227,7 @@ async function loadConvs(){
     const j = await r.json();
     convs = j.convs || [];
   }catch(e){ convs = convs || []; }
+  paintConvCount();
   renderConvSheet();
 }
 
@@ -1395,6 +1594,7 @@ async function loadChatConfig(){
 }
 
 /* ── 启动（真正的拉取交给 enter()，避免未登录时 401）── */
+initBrowse();
 paintHead();
 setSend();
 
