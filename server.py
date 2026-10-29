@@ -1016,6 +1016,83 @@ def _load_chat_cfg():
     except Exception:
         return {}
 
+# ─────────────── 多会话（SQLite 持久化） ───────────────
+# 老版本的 chat.jsonl 会在首次启动时一次性迁进「历史消息」会话。
+import store as _store
+import platform_chat as _plat
+
+try:
+    _migrated = _store.import_jsonl(CHAT_LOG)
+    if _migrated:
+        print("[store] 已迁移 %d 条历史消息到 SQLite" % _migrated)
+except Exception as _e:
+    print("[store] 迁移失败：", _e)
+
+
+def _sse(obj) -> bytes:
+    return ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode()
+
+
+@app.get("/api/conv/list")
+async def conv_list(request: Request):
+    if not authed(request.cookies.get("session")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return {"convs": _store.list_convs()}
+
+
+@app.post("/api/conv/new")
+async def conv_new(request: Request):
+    if not authed(request.cookies.get("session")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        b = await request.json()
+    except Exception:
+        b = {}
+    conv = _store.new_conv(workspace=b.get("workspace") or "/workspace",
+                           model=b.get("model") or "",
+                           provider=b.get("provider") or "")
+    return {"ok": True, "conv": conv}
+
+
+@app.post("/api/conv/update")
+async def conv_update(request: Request):
+    if not authed(request.cookies.get("session")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        b = await request.json()
+        cid = b.pop("id", "")
+        if not _store.get_conv(cid):
+            return JSONResponse({"error": "会话不存在"}, status_code=404)
+        if "title" in b:
+            b["title"] = (b["title"] or "新对话").strip()[:60] or "新对话"
+        _store.update_conv(cid, **b)
+        return {"ok": True, "conv": _store.get_conv(cid)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@app.post("/api/conv/delete")
+async def conv_delete(request: Request):
+    if not authed(request.cookies.get("session")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        b = await request.json()
+        _store.del_conv(b.get("id", ""))
+        return {"ok": True}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@app.get("/api/conv/messages")
+async def conv_messages(request: Request, id: str = ""):
+    if not authed(request.cookies.get("session")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    conv = _store.get_conv(id)
+    if not conv:
+        return JSONResponse({"error": "会话不存在"}, status_code=404)
+    return {"ok": True, "conv": conv, "msgs": _store.msgs(id)}
+
+
 @app.get("/api/chat/config")
 async def chat_config(request: Request):
     if not authed(request.cookies.get("session")):
@@ -1023,7 +1100,18 @@ async def chat_config(request: Request):
     cfg = _load_chat_cfg()
     return {"configured": bool(cfg.get("base_url") and cfg.get("api_key")),
             "models": cfg.get("models") or [],
-            "base_url": cfg.get("base_url", "")}
+            "base_url": cfg.get("base_url", ""),
+            "platform": {"available": _plat.available(),
+                         "models": _plat.models()}}
+
+
+@app.get("/api/chat/platform")
+async def chat_platform(request: Request):
+    """探测平台通道：本机有没有 CLI、能用哪些模型。"""
+    if not authed(request.cookies.get("session")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return {"available": _plat.available(), "models": _plat.models(),
+            "cli": _plat.cli_path() or ""}
 
 @app.post("/api/chat/config/set")
 async def chat_config_set(request: Request):
@@ -1065,71 +1153,126 @@ async def chat_models(request: Request):
 
 @app.post("/api/chat/completions")
 async def chat_completions(request: Request):
-    """真·流式对话：转发到用户配置的 OpenAI 兼容端点，并把对话写入 chat.jsonl。"""
+    """统一对话入口（SSE）。
+
+    provider = "platform" → 本机 codebuddy CLI，免 Key、用设备已有登录态
+    provider = "byo"      → 用户自填的 OpenAI 兼容端点
+    """
     if not authed(request.cookies.get("session")):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    cfg = _load_chat_cfg()
-    if not (cfg.get("base_url") and cfg.get("api_key")):
-        return JSONResponse({"error": "未配置模型接口"}, status_code=400)
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "请求无效"}, status_code=400)
-    model = body.get("model") or (cfg.get("models") or ["default"])[0]
+
+    cfg = _load_chat_cfg()
+    has_key = bool(cfg.get("base_url") and cfg.get("api_key"))
+
+    conv = _store.get_conv(body.get("conv_id") or "")
+    if not conv:
+        conv = _store.new_conv(workspace=body.get("workspace") or "/workspace",
+                               model=body.get("model") or "", provider="")
+    cid = conv["id"]
+    model = (body.get("model") or conv.get("model") or "").strip()
+    workspace = body.get("workspace") or conv.get("workspace") or "/workspace"
     messages = body.get("messages") or []
-    workspace = body.get("workspace") or "/workspace"
-    sys_msg = {"role": "system",
-               "content": "你是云桌面里的编程助手，当前工作区：%s。回答用简体中文，简洁直接。" % workspace}
-    messages = [sys_msg] + messages
     user_text = ""
     for m in reversed(messages):
         if m.get("role") == "user":
-            user_text = m.get("content", ""); break
-    rec = {"role": "user", "content": user_text[:8000], "ts": int(time.time()),
-           "src": "web", "model": model}
-    with CHAT_LOG.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            user_text = m.get("content", "") or ""
+            break
+    if not user_text.strip():
+        return JSONResponse({"error": "消息为空"}, status_code=400)
 
+    provider = body.get("provider") or ("byo" if has_key else "platform")
+    if provider == "byo" and not has_key:
+        provider = "platform"
+    if provider == "platform" and not _plat.available():
+        return JSONResponse({"error": "本机没有可用的平台通道，也未配置 API Key"}, status_code=400)
+
+    _store.add_msg(cid, "user", user_text[:8000], model)
+    _store.auto_title(cid, user_text)
+    _store.update_conv(cid, model=model, workspace=workspace, provider=provider)
+
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+               "X-Conversation-Id": cid}
+
+    # ── 平台通道：免 Key ──
+    if provider == "platform":
+        model = model or "auto"
+        sid = (conv.get("sid") or "").strip()
+
+        async def gen_plat():
+            acc, tools = [], []
+            try:
+                async for ev in _plat.stream(user_text, model, workspace, sid, resume=bool(sid)):
+                    t = ev.get("type")
+                    if t == "meta":
+                        _store.update_conv(cid, sid=ev.get("sid") or "")
+                    elif t == "delta":
+                        acc.append(ev["text"])
+                        yield _sse({"choices": [{"delta": {"content": ev["text"]}}]})
+                    elif t == "tool":
+                        tools.append(ev["text"])
+                        yield _sse({"tool": ev["text"]})
+                    elif t == "title":
+                        cv = _store.get_conv(cid) or {}
+                        if cv.get("title") in ("", "新对话"):
+                            _store.update_conv(cid, title=str(ev["text"])[:40])
+                    elif t == "error":
+                        yield _sse({"error": ev["text"]})
+                    elif t == "done" and ev.get("empty") and not acc:
+                        yield _sse({"error": "平台通道没有返回内容，请换个模型或稍后重试"})
+                yield b"data: [DONE]\n\n"
+            finally:
+                # 客户端中途断开时也要把已生成的部分存下来
+                full = "".join(acc)
+                if full:
+                    _store.add_msg(cid, "assistant", full, model, "; ".join(tools[:4]))
+
+        return StreamingResponse(gen_plat(), media_type="text/event-stream", headers=headers)
+
+    # ── BYO：用户自己的 OpenAI 兼容端点 ──
+    model = model or (cfg.get("models") or ["default"])[0]
+    sys_msg = {"role": "system",
+               "content": "你是云桌面里的编程助手，当前工作区：%s。回答用简体中文，简洁直接。"
+                          "代码块请标注语言。" % workspace}
+    payload = [sys_msg] + messages
     cfg_url = cfg["base_url"].rstrip("/") + "/chat/completions"
 
     def gen():
         acc = []
         try:
-            r = _requests.post(cfg_url, json={"model": model, "messages": messages, "stream": True},
+            r = _requests.post(cfg_url, json={"model": model, "messages": payload, "stream": True},
                                headers={"Authorization": "Bearer " + cfg["api_key"],
                                         "Content-Type": "application/json"},
                                stream=True, timeout=180)
             if r.status_code >= 400:
-                yield ("data: " + json.dumps({"error": "上游 HTTP %d: %s" % (r.status_code, r.text[:300])},
-                                             ensure_ascii=False) + "\n\n").encode()
+                yield _sse({"error": "上游 HTTP %d: %s" % (r.status_code, r.text[:300])})
                 return
             for line in r.iter_lines(decode_unicode=True):
                 if not line:
                     continue
                 if line.startswith("data:"):
-                    payload = line[5:].strip()
-                    if payload == "[DONE]":
+                    pl = line[5:].strip()
+                    if pl == "[DONE]":
                         break
                     try:
-                        o = json.loads(payload)
+                        o = json.loads(pl)
                         d = o["choices"][0]["delta"].get("content", "")
                         if d:
                             acc.append(d)
                     except Exception:
                         pass
-                yield (line + "\n\n").encode()
+                    yield (line + "\n\n").encode()
         except Exception as e:
-            yield ("data: " + json.dumps({"error": str(e)}, ensure_ascii=False) + "\n\n").encode()
+            yield _sse({"error": str(e)})
         finally:
             full = "".join(acc)
             if full:
-                with CHAT_LOG.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps({"role": "assistant", "content": full,
-                                        "ts": int(time.time()), "src": "agent",
-                                        "model": model}, ensure_ascii=False) + "\n")
+                _store.add_msg(cid, "assistant", full, model)
 
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
 # ─────────────── 服务端截图浏览器（Playwright + Chromium） ───────────────
 # 用沙箱自带 Chromium 在服务器渲染网页、回传截图，点击/输入坐标转发。

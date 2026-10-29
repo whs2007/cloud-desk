@@ -118,11 +118,26 @@ DESK_PASSWORD='一个足够长的密码' PORT=8080 python3 server.py
 
 这也就是当前这个实例的来历。换个人、换台沙箱，就得到他自己的一份。
 
-### 那"模型"怎么接？
+### 那"模型"怎么接？两条路，自动选
 
-项目**不内置任何模型账号**，走 **BYO（Bring Your Own）**：
+进入「💬 对话」→ 顶部 ⚡ 按钮，可以看到两个通道：
 
-进入「💬 对话」→ 右上角「模型」→ 填：
+**① 平台通道（免 Key，推荐）**
+
+如果这台机器上装了 `codebuddy` CLI（WorkBuddy 沙箱里默认就有），并且**已经登录过**，
+那么对话会直接复用这份登录态 —— 相当于用设备上那份额度，**不需要任何 API Key**。
+
+实现上没做任何逆向：只是把 CLI 当成一个本地模型网关，用子进程调度
+`codebuddy -p ... --output-format stream-json`，逐行解析 `text_delta` 得到流式输出。
+会话靠 `--session-id` / `--resume` 续接，所以多轮上下文是原生的。
+
+15 个可用模型（`auto` / `deepseek-v4-pro` / `glm-5.3` / `kimi-k3.1-pro` / `minimax-m3.1-flash` …）
+由后端从 CLI 的 `--help` 里解析得到，跟着 CLI 升级自动同步。
+
+> 安全默认：聊天面板**禁用全部工具**（`--tools ""`），模型只能说话，不能读写文件或执行命令。
+> 想让它能读工作区，部署时设 `DESK_CHAT_TOOLS="Read,Glob,Grep"`（只有只读三件套）。
+
+**② 自有 API（BYO，任何机器都能用）**
 
 | 字段 | 例子 |
 |---|---|
@@ -130,9 +145,22 @@ DESK_PASSWORD='一个足够长的密码' PORT=8080 python3 server.py
 | API Key | `sk-...` |
 | 模型 | 点「拉取模型列表」自动填充，或手填 `deepseek-chat` |
 
-只要目标服务兼容 **OpenAI 的 `/chat/completions` 协议**就能用：OpenAI、DeepSeek、通义、智谱、Moonshot、各类自建网关（one-api / new-api）都行。
+只要兼容 **OpenAI 的 `/chat/completions` 协议**就能用：OpenAI、DeepSeek、通义、智谱、
+Moonshot、各类自建网关（one-api / new-api）都行。配置存本机 `chat_config.json`（已 gitignore）。
 
-配置存在本机 `chat_config.json`（已 gitignore）。**不填也能用**，只是对话页退化成"留言板"模式。
+没有平台通道、也没填 Key 时，对话页会退化成"留言板"模式（消息进收件箱，等 Agent 处理）。
+
+### 会话存在哪？
+
+**SQLite**（`data/desk.db`，单文件，WAL 模式）。
+
+- `conversations` 表：`id / title / workspace / model / provider / sid / created_at / updated_at`
+- `messages` 表：`conv_id / role / content / model / tool / ts`
+
+不用 jsonl 的原因：多会话要按会话过滤、并发写要防撕裂、还要能排序。
+不引 Redis / Postgres 的原因：这是个单机工具，多一个服务就多一个会坏的地方。
+
+备份 = 拷走 `data/desk.db` 一个文件。老版本的 `data/chat.jsonl` 首次启动会自动导成一条"历史消息"会话。
 
 ---
 
@@ -145,6 +173,7 @@ DESK_PASSWORD='一个足够长的密码' PORT=8080 python3 server.py
 | `WORKSPACE_ROOT` | `/workspace` → `~/workspace` | 「对话 → 工作区」和文件树能访问的根目录 |
 | `BRIDGE_SECRET` | 自动生成 | 供本地脚本 / Agent 写入对话记录的校验密钥（存 `data/bridge_secret`） |
 | `DESK_TMUX_SESSION` | `desk` | 终端会话的 tmux 名；同一名字的会话会被所有访问端共享 |
+| `DESK_CHAT_TOOLS` | 空（禁用） | 平台通道允许的工具，如 `Read,Glob,Grep`；留空=纯对话，最安全最快 |
 
 ---
 
@@ -168,12 +197,19 @@ DESK_PASSWORD='一个足够长的密码' PORT=8080 python3 server.py
 
 ## 六、功能与限制（实话）
 
+**界面**
+- 移动优先，底部四标签：终端 / 对话 / 文件 / 浏览
+- 深色单一强调色（赤陶橙）设计系统，内联 SVG 图标，不依赖任何外部 CDN
+- 装成 PWA 后全屏无地址栏，跟原生 App 差别不大
+
 **能用**
 - 真 PTY 终端：`cd` / `ls` / 跑任何命令、跑项目、`Ctrl+C`、Tab 补全，手机端有快捷键栏
 - 文件管理：目录树、新建、上传、CodeMirror 编辑保存
 - 端口预览：终端跑 `python3 -m http.server 8000` → 「浏览」页点 `🔌 8000` 实时内嵌
 - 内置浏览器（截图模式）：外网网址 / 搜索词，服务端 Chromium 渲染回传画面，支持点击、滚动、输入
-- AI 对话：接上 OpenAI 兼容接口后是真流式回复，可切模型
+- AI 对话：**免 Key**（复用本机 codebuddy CLI 登录态）+ BYO（自己的 OpenAI 兼容接口）双通道，真流式、可切 15 个模型
+- 多会话：侧边抽屉管理历史会话，标题自动总结，上下文靠 CLI 原生 session 续接
+- Markdown 渲染：代码块带语言标签与一键复制，支持标题/列表/引用/表格
 
 **限制**
 - **没有 GPU**，别在容器里加载大模型，8 GB 内存是硬墙，容易 OOM
@@ -185,15 +221,24 @@ DESK_PASSWORD='一个足够长的密码' PORT=8080 python3 server.py
 ## 七、目录结构
 
 ```
-server.py              # 全部后端：PTY / 文件 API / 端口代理 / 截图浏览器 / 对话
+server.py              # 后端主体：认证 / PTY / 文件 API / 端口代理 / 截图浏览器 / 路由
+store.py               # 会话与消息的 SQLite 持久化（两张表，WAL）
+platform_chat.py       # 平台通道：把 codebuddy CLI 当本地模型网关，流式解析
 static/
-  index.html           # 单页前端（三/四标签）
+  index.html           # 单页前端骨架 + 交互逻辑（零构建）
+  app.css              # 设计系统：色板 / 组件 / 响应式
   manifest.json        # PWA，可「添加到主屏幕」
-  vendor/              # xterm.js、CodeMirror，已本地化
-data/                  # 对话记录（gitignore）
+  vendor/              # xterm.js、CodeMirror，已本地化（不依赖 CDN）
+data/
+  desk.db              # 会话库（gitignore）
+  chat.jsonl           # 老版本记录，首次启动自动迁移
 requirements.txt
 Dockerfile / docker-compose.yml
 ```
+
+三个后端文件的分工：`server.py` 只负责 HTTP 路由和转发，
+存储细节在 `store.py`，模型通道细节在 `platform_chat.py`。
+换存储（比如上 Postgres）只改前者，换模型通道只改后者。
 
 ---
 
