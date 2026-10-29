@@ -50,16 +50,43 @@
   document.write('<script src="' + sc('/vendor/addon-fit.js') + '"><\/script>');
   document.write('<script src="' + sc('/vendor/addon-web-links.js') + '"><\/script>');
 
-  /* 代码编辑器 CodeMirror（本地化，避免公网 CDN 被墙） */
-  document.write('<link rel="stylesheet" href="' + sc('/vendor/codemirror/lib/codemirror.min.css') + '">');
-  document.write('<script src="' + sc('/vendor/codemirror/lib/codemirror.min.js') + '"><\/script>');
-  document.write('<script src="' + sc('/vendor/codemirror/mode/python/python.js') + '"><\/script>');
-  document.write('<script src="' + sc('/vendor/codemirror/mode/javascript/javascript.js') + '"><\/script>');
-  document.write('<script src="' + sc('/vendor/codemirror/mode/shell/shell.js') + '"><\/script>');
-  document.write('<script src="' + sc('/vendor/codemirror/mode/xml/xml.js') + '"><\/script>');
-  document.write('<script src="' + sc('/vendor/codemirror/mode/css/css.js') + '"><\/script>');
-  document.write('<script src="' + sc('/vendor/codemirror/addon/edit/closebrackets.js') + '"><\/script>');
-  document.write('<script src="' + sc('/vendor/codemirror/addon/edit/matchbrackets.js') + '"><\/script>');
+  /* 代码编辑器 CodeMirror 改为「用到时才加载」：
+     它体积最大，同步引入会阻塞整页解析（经网关可能十几秒），
+     只影响「文件」标签打开代码文件的那一刻，不该拖慢首屏。 */
+  window.ensureCM = function(){
+    if (window.__cmPromise) return window.__cmPromise;
+    var files = [
+      ['css', '/vendor/codemirror/lib/codemirror.min.css'],
+      ['js',  '/vendor/codemirror/lib/codemirror.min.js'],
+      ['js',  '/vendor/codemirror/mode/python/python.js'],
+      ['js',  '/vendor/codemirror/mode/javascript/javascript.js'],
+      ['js',  '/vendor/codemirror/mode/shell/shell.js'],
+      ['js',  '/vendor/codemirror/mode/xml/xml.js'],
+      ['js',  '/vendor/codemirror/mode/css/css.js'],
+      ['js',  '/vendor/codemirror/addon/edit/closebrackets.js'],
+      ['js',  '/vendor/codemirror/addon/edit/matchbrackets.js']
+    ];
+    window.__cmPromise = files.reduce(function(p, f){
+      return p.then(function(){
+        return new Promise(function(res){
+          var el;
+          if (f[0] === 'css'){
+            el = document.createElement('link');
+            el.rel = 'stylesheet';
+            el.href = sc(f[1]);
+            el.onload = res; el.onerror = res;
+            document.head.appendChild(el);
+          } else {
+            el = document.createElement('script');
+            el.src = sc(f[1]);
+            el.onload = res; el.onerror = res;   // 失败也放行，避免永久卡住
+            document.head.appendChild(el);
+          }
+        });
+      });
+    }, Promise.resolve());
+    return window.__cmPromise;
+  };
 
   /* PWA 资源由浏览器原生加载，不会走上面 patch 的 fetch，必须显式带 sharecode 否则 403 */
   var ml = document.createElement('link'); ml.rel = 'manifest'; ml.href = sc('/manifest.json'); document.head.appendChild(ml);
@@ -148,6 +175,12 @@
     padding:5px 10px;border-bottom:1px solid var(--stroke);
     background:rgba(0,0,0,.22);
   }
+  .termbadge{
+    flex:0 0 auto;margin:7px 10px 0;padding:5px 9px;border-radius:8px;
+    font-size:11px;line-height:1.4;text-align:center;
+    background:rgba(77,212,172,.12);border:1px solid rgba(77,212,172,.28);color:#7fe3c4;
+  }
+  .termbadge.warn{background:rgba(255,180,80,.12);border-color:rgba(255,180,80,.30);color:#ffc46b}
 
   /* ── 底部标签栏 ── */
   #tabbar{
@@ -368,6 +401,7 @@
 
 <!-- 标签一：终端（cd / ls / 跑项目） -->
 <section class="tab-panel" id="tab-term">
+  <div id="termsess" class="termbadge" style="display:none"></div>
   <div id="hint">试试：<code>python3</code> · <code>top</code> · <code>vim</code> · <code>ls</code> · Ctrl+C 中断</div>
   <div id="term"></div>
 </section>
@@ -520,7 +554,7 @@
     <h2>◈ 云桌面工作台</h2>
     <p>此页面含真实 shell 权限（等同 root）。<br>请输入访问密码后进入。</p>
     <input type="password" id="pw" placeholder="访问密码" autocomplete="off">
-    <label class="remember"><input type="checkbox" id="remember" checked> 记住我（30 天内免登录）</label>
+    <label class="remember"><input type="checkbox" id="remember" checked> 记住我（180 天内免登录）</label>
     <button onclick="doLogin()">进 入</button>
     <div class="err" id="lerr"></div>
   </div>
@@ -529,7 +563,7 @@
 <div id="boot">
   <div>正在建立 PTY 会话…</div>
   <div style="font-size:11.5px;opacity:.6">连接真实 shell</div>
-  <div style="font-size:10px;opacity:.35;margin-top:6px">build v13 · 若长时间停留请截图此版本号</div>
+  <div style="font-size:10px;opacity:.35;margin-top:6px">build v15 · 若长时间停留请截图此版本号</div>
 </div>
 
 <script>
@@ -746,8 +780,26 @@ document.getElementById('pw').addEventListener('keydown', e=>{
   if (e.key === 'Enter') doLogin();
 });
 
-function enter(){
+async function termInfo(){
+  try{
+    const r = await fetch('/api/term/status');
+    if (!r.ok) return;
+    const j = await r.json();
+    const el = document.getElementById('termsess');
+    if (!el) return;
+    if (!j.persistent){
+      el.textContent = '本机未装 tmux：终端会话会随服务重启丢失（安装 tmux 即可常驻）';
+      el.classList.add('warn');
+      el.style.display = '';
+    } else if (j.alive){
+      el.textContent = '已接续上次的终端会话 · 关页面 / 服务重启都不中断';
+      el.style.display = '';
+    }
+  }catch(e){}
+}
+async function enter(){
   document.getElementById('login').classList.add('hide');
+  await termInfo();
   startTerm(); poll(); loadChatConfig();
 }
 (async function boot(){
@@ -901,7 +953,10 @@ async function fmOpen(p){
     curFile = p;
     document.getElementById('edpath').textContent = p;
     document.getElementById('editorpane').style.display = 'flex';
+    document.getElementById('edcm').innerHTML = '<div style="padding:14px;font-size:12px;color:var(--dim)">编辑器加载中…</div>';
+    await ensureCM();
     document.getElementById('edcm').innerHTML = '';
+    if (typeof CodeMirror === 'undefined'){ alert('编辑器资源加载失败，可先用终端编辑该文件'); return; }
     cm = CodeMirror(document.getElementById('edcm'), {
       value: j.content, mode: fmMode(p), lineNumbers: true,
       autoCloseBrackets: true, matchBrackets: true,

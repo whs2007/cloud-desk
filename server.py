@@ -2,7 +2,7 @@
 真 PTY 终端 + WebSocket + 真实 cgroup 配额采样
 注意：psutil / nproc / free 在容器内返回宿主数据，不可采信，配额一律读 cgroup。
 """
-import os, pty, fcntl, termios, struct, asyncio, signal, json, time, re
+import os, pty, fcntl, termios, struct, asyncio, signal, json, time, re, shutil
 import hashlib, hmac, secrets, base64
 import psutil
 import requests as _requests
@@ -88,8 +88,8 @@ def _save_remembers():
         REMEMBER_FILE.write_text(json.dumps(REMEMBERS))
     except Exception:
         pass
-SESSION_TTL = 7 * 24 * 3600       # 普通登录会话 7 天有效
-REMEMBER_TTL = 30 * 24 * 3600     # “记住我”长期令牌 30 天
+SESSION_TTL = 30 * 24 * 3600      # 普通登录会话 30 天有效（手机端点开即用）
+REMEMBER_TTL = 180 * 24 * 3600    # “记住我”长期令牌 180 天
 MAX_FAIL, FAIL_WINDOW = 5, 300
 
 # ── 会话令牌改成「自签名令牌」 ──
@@ -353,6 +353,49 @@ def _host_cpu_model():
 
 # ─────────────── 真 PTY 终端 ───────────────
 
+# ─────────────── 终端会话宿主 ───────────────
+# 裸 pty.fork() 的会话挂在 web 进程上：进程一重启就全丢，多实例之间也互不相认。
+# 改为把真正的 shell 托管在 tmux 里，web 进程只做「附着客户端」：
+#   · 页面关掉 / 服务重启 / 换实例 → 会话仍在，重新进来接着用原来的屏幕和命令历史
+#   · 手机、电脑可同时附着同一个会话
+# 没有 tmux 的环境自动退回裸 bash，不影响开源自建部署。
+TMUX_BIN = shutil.which("tmux")
+TMUX_SESSION = os.environ.get("DESK_TMUX_SESSION", "desk")
+
+
+def spawn_pty(env):
+    """启动一个挂在 tmux 会话上的终端，返回 (pid, fd)。"""
+    pid, fd = pty.fork()
+    if pid == 0:                                    # 子进程
+        try:
+            if TMUX_BIN:
+                s = TMUX_SESSION
+                conf = str(BASE / "tmux.conf")
+                # 首次直接“附着创建”，shell 才会立刻画出提示符；
+                # 之后每次都只是 attach，屏幕内容原样保留（这就是“接着上次用”）。
+                script = (
+                    'tmux -f "{conf}" attach -t {s} 2>/dev/null '
+                    '|| exec tmux -f "{conf}" new-session -s {s}'
+                ).format(conf=conf, s=s)
+                os.execve("/bin/bash", ["/bin/bash", "-c", script], env)
+            os.execvpe("/bin/bash", ["/bin/bash"], env)
+        except Exception:
+            pass
+        finally:
+            os._exit(1)
+    return pid, fd
+
+
+def tmux_alive():
+    """当前是否已有活着的托管会话。"""
+    if not TMUX_BIN:
+        return False
+    try:
+        return os.system("%s has-session -t %s 2>/dev/null" % (TMUX_BIN, TMUX_SESSION)) == 0
+    except Exception:
+        return False
+
+
 @app.websocket("/ws/terminal")
 async def terminal(ws: WebSocket):
     # 关键：WebSocket 必须校验，仅挡住页面不足以保护真 shell
@@ -367,12 +410,7 @@ async def terminal(ws: WebSocket):
     env["COLUMNS"] = "120"
     env["LINES"] = "30"
 
-    pid, fd = pty.fork()
-    if pid == 0:                       # 子进程：直接 exec bash
-        try:
-            os.execvpe("/bin/bash", ["/bin/bash"], env)
-        finally:
-            os._exit(1)
+    pid, fd = spawn_pty(env)
 
     # 父进程：非阻塞读取
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
@@ -461,12 +499,7 @@ def _spawn_term(token):
     env = dict(os.environ)
     env["TERM"] = "xterm-256color"
     env["PS1"] = r"\u@cloud:\w\$ "
-    pid, fd = pty.fork()
-    if pid == 0:
-        try:
-            os.execvpe("/bin/bash", ["/bin/bash"], env)
-        finally:
-            os._exit(1)
+    pid, fd = spawn_pty(env)
     fl = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
     TERMS[token] = {"fd": fd, "pid": pid, "buf": bytearray()}
@@ -554,6 +587,25 @@ async def term_resize(request: Request):
     cols = max(1, int(body.get("cols", 80)))
     rows = max(1, int(body.get("rows", 24)))
     fcntl.ioctl(t["fd"], termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    return {"ok": True}
+
+@app.get("/api/term/status")
+async def term_status(request: Request):
+    """告诉前端当前是否已有一个「随时可回来」的托管会话。"""
+    if not authed(request.cookies.get("session")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    alive = tmux_alive()
+    return {"ok": True, "persistent": bool(TMUX_BIN), "alive": alive,
+            "session": TMUX_SESSION if TMUX_BIN else ""}
+
+
+@app.post("/api/term/reset")
+async def term_reset(request: Request):
+    """彻底结束托管会话（用户想要一个干净终端时用）。"""
+    if not authed(request.cookies.get("session")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if TMUX_BIN:
+        os.system("%s kill-session -t %s 2>/dev/null" % (TMUX_BIN, TMUX_SESSION))
     return {"ok": True}
 
 # ─────────────── 静态托管 ───────────────

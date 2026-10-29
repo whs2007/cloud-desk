@@ -9,8 +9,9 @@ ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive
 
 # 终端里常用的基础工具（这是个能写代码的终端，不是纯服务）
+# tmux 用于托管终端会话：关页面、重启服务、换实例都不会丢
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash curl wget git vim nano less unzip zip procps iproute2 \
+        bash curl wget git vim nano less unzip zip procps iproute2 tmux \
         ca-certificates locales \
     && sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen \
     && locale-gen \

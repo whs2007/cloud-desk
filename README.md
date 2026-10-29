@@ -144,10 +144,29 @@ DESK_PASSWORD='一个足够长的密码' PORT=8080 python3 server.py
 | `DESK_PASSWORD` | 随机生成 | 访问密码；仅首次启动且无 `auth.json` 时生效 |
 | `WORKSPACE_ROOT` | `/workspace` → `~/workspace` | 「对话 → 工作区」和文件树能访问的根目录 |
 | `BRIDGE_SECRET` | 自动生成 | 供本地脚本 / Agent 写入对话记录的校验密钥（存 `data/bridge_secret`） |
+| `DESK_TMUX_SESSION` | `desk` | 终端会话的 tmux 名；同一名字的会话会被所有访问端共享 |
 
 ---
 
-## 五、功能与限制（实话）
+## 五、登录态与终端会话能保持多久
+
+这是「手机点开就是连接状态」的关键，分两层：
+
+**登录态（免密码）**
+- 登录后写入 **30 天有效**的签名 Cookie，浏览器关闭再开仍在
+- 勾选「记住我」（默认勾选）会额外存一个 **180 天**令牌在 `localStorage`，Cookie 过期后自动静默续登
+- 装成 PWA 后 Cookie 存在独立容器里，不会被「清理浏览器数据」顺手清掉
+
+**终端会话（不丢工作现场）**
+- shell 被托管在 **tmux** 里，网页进程只是「附着客户端」
+- 关页面、刷新、切后台、**服务重启**、网关换实例，重新进来都还是原来那个终端：工作目录、命令历史、正在跑的任务都在
+- 手机和电脑可以同时附着同一个会话
+- 想从干净状态开始：`tmux kill-session -t desk`，或调 `POST /api/term/reset`
+- **没装 tmux 会自动退回裸 bash**（功能正常，但会话随服务重启丢失）。Docker 镜像已内置
+
+---
+
+## 六、功能与限制（实话）
 
 **能用**
 - 真 PTY 终端：`cd` / `ls` / 跑任何命令、跑项目、`Ctrl+C`、Tab 补全，手机端有快捷键栏
@@ -163,7 +182,7 @@ DESK_PASSWORD='一个足够长的密码' PORT=8080 python3 server.py
 
 ---
 
-## 六、目录结构
+## 七、目录结构
 
 ```
 server.py              # 全部后端：PTY / 文件 API / 端口代理 / 截图浏览器 / 对话
@@ -178,7 +197,7 @@ Dockerfile / docker-compose.yml
 
 ---
 
-## 七、常见问题
+## 八、常见问题
 
 **Q：打开一片空白？**
 A：先看终端日志有没有报错。浏览器强制刷新（Ctrl/⌘+Shift+R）。若通过 WorkBuddy 网关访问，URL 必须带 `?sharecode=...`。
