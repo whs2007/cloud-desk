@@ -2,6 +2,11 @@
 auth.json
 remember.json
 
+# 部署时用来放 DESK_PASSWORD 的本地文件
+.env
+.env.*
+!.env.example
+
 # 对话记录与模型 Key
 chat_config.json
 data/
