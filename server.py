@@ -935,6 +935,11 @@ NOISE_DIRS = {"node_modules", "__pycache__", ".venv", "venv", ".git",
               ".mypy_cache", ".pytest_cache", "dist", "build", ".next"}
 # 项目自身目录名：出现在工作区根时默认折叠，避免用户一进来看到的是 server.py
 SELF_DIR = BASE.name
+# 项目根下的这些文件是凭据/数据，任何视图都不该列出来
+# （内容即使读到也只是哈希，但没有理由把凭据文件摆到界面上）
+SENSITIVE = {"auth.json", "remember.json", "chat_config.json",
+             "bridge_secret", "session_secret",
+             "desk.db", "desk.db-wal", "desk.db-shm"}
 
 
 @app.get("/api/fs/list")
@@ -949,8 +954,11 @@ async def fs_list(request: Request, path: str = ".", show_self: int = 0):
             return {"items": [{"name": d.name, "type": "file", "size": d.stat().st_size}],
                     "hidden": []}
         items, hidden = [], []
+        at_base = d.resolve() == BASE.resolve()
         for e in sorted(os.listdir(d)):
             if e.startswith(".") or e in NOISE_DIRS:
+                continue
+            if at_base and (e in SENSITIVE or e == "data"):
                 continue
             # 工作区根目录下的项目本体：默认隐藏，前端「显示项目文件」开关可打开
             if (not show_self) and d.resolve() == WS_ROOT.resolve() and e == SELF_DIR:
@@ -968,7 +976,7 @@ async def fs_list(request: Request, path: str = ".", show_self: int = 0):
 async def fs_read(request: Request, path: str = "", limit: int = 200000):
     if not authed(request.cookies.get("session")):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    f = _safe_path(path)
+    f = _safe_fs(path)
     if not f or not f.is_file():
         return JSONResponse({"error": "不是文件或不存在"})
     try:
@@ -989,7 +997,7 @@ async def fs_write(request: Request):
         data = body.get("content", "")
         if body.get("enc") == "b64":
             data = base64.b64decode(data).decode("utf-8", "replace")
-        f = _safe_path(body.get("path", ""))
+        f = _safe_fs(body.get("path", ""))
         if not f:
             return JSONResponse({"error": "非法路径"}, status_code=400)
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -1004,7 +1012,7 @@ async def fs_delete(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         body = await request.json()
-        f = _safe_path(body.get("path", ""))
+        f = _safe_fs(body.get("path", ""))
         if not f or not f.exists():
             return JSONResponse({"error": "不存在"}, status_code=400)
         if f.is_dir():
@@ -1022,7 +1030,7 @@ async def fs_mkdir(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         body = await request.json()
-        f = _safe_path(body.get("path", ""))
+        f = _safe_fs(body.get("path", ""))
         if not f:
             return JSONResponse({"error": "非法路径"}, status_code=400)
         f.mkdir(parents=True, exist_ok=True)
