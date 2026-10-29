@@ -1,0 +1,9 @@
+# 核心依赖（必需）
+fastapi>=0.110
+uvicorn[standard]>=0.27
+psutil>=5.9
+requests>=2.31
+
+# 可选：内置「截图浏览器」（不装也能用，只是「浏览」页只能预览本地端口）
+# 安装后还需执行: python -m playwright install chromium
+playwright>=1.40

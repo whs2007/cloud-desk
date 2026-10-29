@@ -1,0 +1,20 @@
+services:
+  desk:
+    build:
+      context: .
+      args:
+        # 想用「截图浏览器」把这里改成 "1"（首次构建会多花几分钟装 Chromium）
+        WITH_BROWSER: "0"
+    ports:
+      - "8080:8080"
+    environment:
+      # 首次启动的访问密码；留空则自动生成并打印在日志里
+      DESK_PASSWORD: "change-me-please"
+      WORKSPACE_ROOT: "/workspace"
+    volumes:
+      # 左边是你宿主机上的项目目录，右边固定为容器工作区
+      - ./workspace:/workspace
+    restart: unless-stopped
+    # PTY 终端需要，避免信号/进程组异常
+    tty: true
+    stdin_open: true

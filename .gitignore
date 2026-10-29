@@ -1,0 +1,19 @@
+# 本地凭据与会话（绝对不能提交）
+auth.json
+remember.json
+
+# 对话记录与模型 Key
+chat_config.json
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 前端（资源已本地化到 static/vendor，无需 node_modules）
+node_modules/
+
+# 系统
+.DS_Store

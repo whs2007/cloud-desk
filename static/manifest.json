@@ -1,0 +1,16 @@
+{
+  "name": "云桌面工作台",
+  "short_name": "云桌面",
+  "description": "手机点开即用的云端工作站：真终端、文件、AI 对话",
+  "start_url": "/?sharecode=YH7DEIPFTF&v=5",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#050b16",
+  "theme_color": "#0a0e27",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
