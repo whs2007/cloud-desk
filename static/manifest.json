@@ -2,7 +2,7 @@
   "name": "云桌面工作台",
   "short_name": "云桌面",
   "description": "手机点开即用的云端工作站：真终端、文件、AI 对话",
-  "start_url": "/?sharecode=YH7DEIPFTF&v=5",
+  "start_url": "./",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",

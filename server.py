@@ -1213,6 +1213,23 @@ async def br_back(request: Request):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=502)
 
+# PWA 清单按请求动态生成：把网关的 sharecode 注入启动地址与图标地址，
+# 这样同一份代码在任何部署下都能正确“添加到主屏幕”，仓库里也不用写死任何域名参数。
+@app.get("/manifest.json")
+async def manifest(request: Request):
+    try:
+        m = json.loads((STATIC / "manifest.json").read_text(encoding="utf-8"))
+    except Exception:
+        return JSONResponse({"error": "manifest not found"}, status_code=404)
+    sc_ = request.query_params.get("sharecode")
+    if sc_:
+        suffix = "?sharecode=" + sc_
+        m["start_url"] = "/" + suffix
+        for ic in m.get("icons", []):
+            if ic.get("src") and "?" not in ic["src"]:
+                ic["src"] = ic["src"] + suffix
+    return JSONResponse(m)
+
 app.mount("/", StaticFiles(directory=str(STATIC), html=True), name="static")
 
 if __name__ == "__main__":
