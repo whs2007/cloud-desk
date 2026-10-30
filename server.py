@@ -714,6 +714,19 @@ async def chat_pending(request: Request):
     return {"ok": True, "pending": n}
 
 # ─────────────── 监听端口探测（供浏览器页一键预览正在运行的服务） ───────────────
+_SELF_PORT = int(os.environ.get("PORT", 8080))
+
+# 云桌面自带的常驻服务：沙箱代理、文件同步、编辑器网关、agent 预热……
+# 它们一直在监听，全展示出来只会把用户自己起的服务淹掉。
+_PLATFORM_HINTS = ("/.PlnPyKFp4CRfFtgC1/", "/usr/local/tna/", "/usr/local/system/",
+                   "sandbox-proxy", "envd", "editor_sdk", "sync_server", "codebuddy")
+
+# 想额外藏掉某些端口：DESK_HIDE_PORTS="8089,9000"
+_HIDE_PORTS = {int(x) for x in
+               os.environ.get("DESK_HIDE_PORTS", "8089").split(",")
+               if x.strip().isdigit()}
+
+
 def _listening_ports():
     try:
         conns = psutil.net_connections(kind="inet")
@@ -722,29 +735,163 @@ def _listening_ports():
     except Exception:
         return []
 
-# 服务启动时就已存在的监听端口 = 平台/系统自身，不展示给用户（否则一片干扰）
-_BOOT_PORTS = set(_listening_ports())
-_SELF_PORT = int(os.environ.get("PORT", 8080))
+
+def _scan_ports():
+    """一次扫描拿到「端口 → 持有进程」。逐端口全表查会把手机构建的轮询拖慢。"""
+    res = {}
+    try:
+        for c in psutil.net_connections(kind="inet"):
+            if c.status != "LISTEN" or not c.laddr or not c.pid:
+                continue
+            port = c.laddr.port
+            if port in res:
+                continue
+            try:
+                pr = psutil.Process(c.pid)
+                argv = pr.cmdline()
+                if argv:
+                    # 解释器全路径太吵（/root/.pyenv/.../python3），只留文件名
+                    argv = [os.path.basename(argv[0])] + argv[1:]
+                res[port] = {"pid": c.pid, "name": pr.name(),
+                             "cmd": " ".join(argv)[:200]}
+            except Exception:
+                res[port] = {"pid": c.pid, "name": "", "cmd": ""}
+    except Exception:
+        pass
+    return res
+
+
+def _port_owner(port: int):
+    """谁在监听这个端口：给「服务卡」显示进程名，也给「停止」提供 pid。"""
+    return _scan_ports().get(port, {})
+
+
+def _is_platform_proc(name: str, cmd: str) -> bool:
+    blob = (name or "") + " " + (cmd or "")
+    return any(h in blob for h in _PLATFORM_HINTS)
+
+
+def _fresh_services():
+    """当前可见的本地服务（1 秒缓存：流式期间前端会每 4 秒轮询）。"""
+    now = time.time()
+    if now - _PORTS_CACHE["at"] < 1.0:
+        return _PORTS_CACHE["list"]
+    out = []
+    for port, info in sorted(_scan_ports().items()):
+        if port == _SELF_PORT or port < 1024 or port in _HIDE_PORTS:
+            continue
+        if not info.get("pid"):          # pid 不可见 = 不属于本命名空间的用户进程
+            continue
+        if _is_platform_proc(info.get("name", ""), info.get("cmd", "")):
+            continue
+        out.append({"port": port, "pid": info["pid"], "name": info.get("name", ""),
+                    "cmd": info.get("cmd", ""), "url": "/preview/%d/" % port})
+    _PORTS_CACHE.update(at=now, list=out)
+    return out
+
+
+_PORTS_CACHE = {"at": 0.0, "list": []}
+
 
 @app.get("/api/ports")
 async def api_ports(request: Request):
     if not authed(request.cookies.get("session")):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    now = _listening_ports()
-    return {"ports": [p for p in now
-                      if p not in _BOOT_PORTS and p != _SELF_PORT],
-            "all": now}
+    svcs = _fresh_services()
+    return {"ports": [s["port"] for s in svcs],
+            "services": svcs,
+            "all": _listening_ports()}
+
+
+def _svc_or_none(port: int):
+    """端口真在监听才算服务，模型顺口编的数字不进前端。"""
+    for s in _fresh_services():
+        if s["port"] == port:
+            return s
+    return None
+
+
+@app.post("/api/services/stop")
+async def service_stop(request: Request):
+    """在对话页直接关掉一个自己起的服务（端口号来自服务卡）。"""
+    if not authed(request.cookies.get("session")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+        port = int(body.get("port") or 0)
+    except Exception:
+        return JSONResponse({"error": "参数无效"}, status_code=400)
+    if port == _SELF_PORT or port < 1024 or port in _HIDE_PORTS:
+        return JSONResponse({"error": "这是系统端口，不能停"}, status_code=400)
+    info = _port_owner(port)
+    if not info.get("pid"):
+        return JSONResponse({"error": "没找到监听该端口的进程"}, status_code=404)
+    if _is_platform_proc(info.get("name", ""), info.get("cmd", "")):
+        return JSONResponse({"error": "这是云桌面自身的服务，不能停"}, status_code=400)
+    try:
+        proc = psutil.Process(info["pid"])
+        # 先礼后兵：dev server 常带子进程，整个进程组一起收掉更干净
+        for child in proc.children(recursive=True):
+            try:
+                child.terminate()
+            except Exception:
+                pass
+        proc.terminate()
+        try:
+            proc.wait(timeout=4)
+        except Exception:
+            proc.kill()
+        _PORTS_CACHE["at"] = 0
+        return {"ok": True, "pid": info["pid"]}
+    except Exception as e:
+        return JSONResponse({"error": "停止失败：" + str(e)}, status_code=500)
 
 # ─────────────── 端口预览 / 内置浏览器（反向代理） ───────────────
 # 公网网关在首次带 sharecode 访问时会下发 __wb_rsc cookie，之后同源子资源自动豁免，
 # 因此 iframe 内网页的子资源（JS/CSS）也能通过网关，无需改写 HTML。
 
 def _strip_frame_headers(headers):
-    h = dict(headers)
-    for k in ("x-frame-options", "content-security-policy",
-              "content-security-policy-report-only", "transfer-encoding"):
-        h.pop(k.lower(), None)
-    return h
+    # 注意：requests 给的键名大小写不固定（Content-Length / content-length 都有），
+    # 必须按小写比对后重建，否则 content-length 漏网 → uvicorn 报
+    # "Response content longer than Content-Length"，页面直接空白。
+    drop = {"x-frame-options", "content-security-policy",
+            "content-security-policy-report-only", "transfer-encoding",
+            "content-encoding", "content-length", "server", "date",
+            "connection", "keep-alive"}
+    return {k: v for k, v in headers.items() if k.lower() not in drop}
+
+
+_ROOT_ATTR = re.compile(
+    rb'(<(?:a|script|link|img|source|iframe|form|video|audio|use)\b[^>]*?'
+    rb'\b(?:src|href|action|data-src)=)(["\'])/(?!/)(?!preview/)')
+
+
+def _rewrite_html(data: bytes, port: int) -> bytes:
+    """让「站点根路径」的页面也能跑在 /preview/<port>/ 下面。
+
+    Vite / Next / 大部分 SPA 都会写 `<script src="/assets/x.js">`，这种绝对路径
+    不认 <base>，会直接打到云桌面自己的根目录，页面就是白屏。
+    所以两步：① 插 <base> 管住相对路径；② 把标签属性里以 `/` 开头的地址加前缀。
+    """
+    pfx = b"/preview/%d/" % port
+    if b"<base" not in data[:2048].lower():
+        m = re.search(rb"<head[^>]*>", data, re.I)
+        tag = b'<base href="' + pfx + b'">'
+        data = (data[:m.end()] + tag + data[m.end():]) if m else (tag + data)
+    return _ROOT_ATTR.sub(lambda m: m.group(1) + m.group(2) + pfx, data)
+
+
+def _prefix_path(u: str, port: int) -> str:
+    """把上游的重定向地址也拉回预览前缀下，否则一点就跳到云桌面首页。"""
+    pfx = "/preview/%d" % port
+    m = re.match(r"^https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0):%d(/.*)?$"
+                 % port, u, re.I)
+    if m:
+        return pfx + (m.group(1) or "/")
+    if u.startswith("/") and not u.startswith("//") \
+            and not (u == pfx or u.startswith(pfx + "/")):
+        return pfx + u
+    return u
 
 async def _do_proxy(url: str, request: Request, rewrite_port: int = None,
                     allow_redirects: bool = True):
@@ -753,19 +900,34 @@ async def _do_proxy(url: str, request: Request, rewrite_port: int = None,
     if "sharecode=" in q:
         qs = {k: v[0] for k, v in parse_qs(q).items() if k != "sharecode"}
         url = url + ("?" + urlencode(qs) if qs else "")
+
+    # 方法也要转发：iframe 里点「登录 / 提交」是 POST，只做 GET 会直接 405
+    method = request.method.upper()
+    body = None
+    if method not in ("GET", "HEAD", "OPTIONS"):
+        try:
+            body = await request.body()
+        except Exception:
+            body = None
+    hdrs = {"User-Agent": "Mozilla/5.0 (cloud-preview)",
+            "Accept": request.headers.get("accept", "*/*")}
+    ctype_in = request.headers.get("content-type")
+    if ctype_in:
+        hdrs["Content-Type"] = ctype_in
+
     try:
         loop = asyncio.get_event_loop()
         resp = await loop.run_in_executor(
             None,
-            lambda: _requests.get(url, timeout=12, stream=True,
-                                 allow_redirects=allow_redirects,
-                                 headers={"User-Agent": "Mozilla/5.0 (cloud-preview)"})
+            lambda: _requests.request(method, url, data=body, headers=hdrs,
+                                      timeout=25, stream=True,
+                                      allow_redirects=allow_redirects)
         )
     except Exception as e:
         return JSONResponse({"error": "代理失败: " + str(e)}, status_code=502)
 
     cl = resp.headers.get("content-length")
-    if cl and int(cl) > 25 * 1024 * 1024:
+    if cl and cl.isdigit() and int(cl) > 25 * 1024 * 1024:
         resp.close()
         return JSONResponse({"error": "响应过大（>25MB）"}, status_code=502)
     data = b""
@@ -778,8 +940,15 @@ async def _do_proxy(url: str, request: Request, rewrite_port: int = None,
         resp.close()
 
     ctype = resp.headers.get("content-type", "application/octet-stream")
-    # 轻量改写：把本机绝对地址换成预览代理路径，便于子资源加载
+    headers = _strip_frame_headers(resp.headers)
+
+    # 302 到 /login 这种要拉回预览前缀，否则一点就跳去云桌面首页
+    loc = headers.get("location")
+    if rewrite_port and loc:
+        headers["location"] = _prefix_path(loc, rewrite_port)
+
     if rewrite_port and "text/html" in ctype:
+        # ① 先把显式的本机地址换掉（有些页面把 API 地址写死在 HTML 里）
         for p in (f"https://127.0.0.1:{rewrite_port}",
                   f"http://127.0.0.1:{rewrite_port}",
                   f"https://localhost:{rewrite_port}",
@@ -787,11 +956,15 @@ async def _do_proxy(url: str, request: Request, rewrite_port: int = None,
                   f"//127.0.0.1:{rewrite_port}",
                   f"//localhost:{rewrite_port}"):
             data = data.replace(p.encode(), f"/preview/{rewrite_port}".encode())
+        # ② 再插 <base> + 改根路径，让 SPA 的资源能加载
+        data = _rewrite_html(data, rewrite_port)
+
     return Response(content=data, media_type=ctype,
-                    headers=_strip_frame_headers(resp.headers),
+                    headers=headers,
                     status_code=resp.status_code)
 
-@app.get("/preview/{port:int}/{rest:path}")
+@app.api_route("/preview/{port:int}/{rest:path}",
+               methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
 async def preview(port: int, rest: str, request: Request):
     if not authed(request.cookies.get("session")):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1366,6 +1539,7 @@ async def chat_completions(request: Request):
 
         async def gen_plat():
             acc, tools = [], []
+            svc_seen = set()
             try:
                 async for ev in _plat.stream(user_text, model, workspace, sid, resume=bool(sid)):
                     t = ev.get("type")
@@ -1377,6 +1551,14 @@ async def chat_completions(request: Request):
                     elif t == "tool":
                         tools.append(ev["text"])
                         yield _sse({"tool": ev["text"]})
+                    elif t == "port":
+                        # 模型报的端口先验一遍：真在监听才推给前端当「服务卡」
+                        p = int(ev.get("port") or 0)
+                        if p and p not in svc_seen:
+                            svc = _svc_or_none(p)
+                            if svc:
+                                svc_seen.add(p)
+                                yield _sse({"service": svc})
                     elif t == "title":
                         cv = _store.get_conv(cid) or {}
                         if cv.get("title") in ("", "新对话"):
@@ -1386,13 +1568,24 @@ async def chat_completions(request: Request):
                         yield b": ping\n\n"
                     elif t == "error":
                         yield _sse({"error": ev["text"]})
-                    elif t == "done" and ev.get("empty") and not acc:
-                        if ev.get("dropped"):
-                            yield _sse({"error": "这条回复只有工具调用、没有文字：当前对话通道不能执行命令。"
-                                                 "要拉代码、跑服务，请到 💻 终端 里执行；"
-                                                 "或在「模型」里换成自己的 API。"})
-                        else:
-                            yield _sse({"error": "平台通道没有返回内容，请换个模型或稍后重试"})
+                    elif t == "done":
+                        # 兜底：模型忘了写 PORT: 时，done 里还带着本轮捞到的候选端口
+                        for p in (ev.get("ports") or []):
+                            try:
+                                p = int(p)
+                            except Exception:
+                                continue
+                            if p and p not in svc_seen:
+                                svc = _svc_or_none(p)
+                                if svc:
+                                    svc_seen.add(p)
+                                    yield _sse({"service": svc})
+                        if ev.get("empty") and not acc:
+                            if ev.get("dropped"):
+                                yield _sse({"error": "这轮只调用了工具、没有留下文字。"
+                                                     "可以再问一句「跑到哪一步了」，或到 💻 终端看完整过程。"})
+                            else:
+                                yield _sse({"error": "平台通道没有返回内容，请换个模型或稍后重试"})
                 yield b"data: [DONE]\n\n"
             finally:
                 # 客户端中途断开时也要把已生成的部分存下来

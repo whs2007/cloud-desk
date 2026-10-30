@@ -137,6 +137,7 @@
     <div class="ch-chips">
       <div class="pill" id="btnws" title="选择工作区"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2.5h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="v" id="chatws">/workspace</span></div>
       <div class="pill accent" id="btnmodel" title="切换模型"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H11l-1 8.5 9-12h-6.5z"/></svg><span class="v" id="chatmodelv">auto</span></div>
+      <div class="pill live" id="svcchip" title="本机正在跑的服务" hidden><span class="dot"></span><span class="v" id="svcnum">0</span></div>
     </div>
   </div>
   <div id="chatlist"></div>
@@ -154,6 +155,26 @@
     <div class="cs-hd">全部会话<span class="n" id="csCount"></span><span class="x" id="csCloser">✕</span></div>
     <div class="cs-list" id="csList"></div>
   </div>
+</div>
+
+<!-- 运行中的服务（底部抽屉）：对话里起的服务，随时点开看 -->
+<div id="svcsheet">
+  <div class="cs-panel">
+    <div class="cs-hd">本机运行中的服务<span class="n" id="svcCount"></span><span class="x" id="svcCloser">✕</span></div>
+    <div class="cs-list" id="svcList"></div>
+  </div>
+</div>
+
+<!-- 对话内全屏预览：不离开对话就能看到刚跑起来的页面 -->
+<div id="peek">
+  <div class="pk-bar">
+    <button class="pk-b" id="pkClose" title="关闭">✕</button>
+    <div class="pk-url" id="pkUrl">localhost</div>
+    <button class="pk-b" id="pkReload" title="刷新">⟳</button>
+    <button class="pk-b" id="pkOut" title="新窗口打开">↗</button>
+  </div>
+  <iframe id="pkFrame" src="about:blank" title="本地服务预览"></iframe>
+  <div class="pk-tip" id="pkTip">由本机服务实时渲染 · 样式错乱就点 ⟳</div>
 </div>
 
 <!-- 标签三：文件（浏览 / 编辑项目与配置） -->
@@ -634,6 +655,7 @@ document.querySelectorAll('[data-cmd]').forEach(b=>{
 /* ───────── 底部三标签切换 ───────── */
 let curTab = 'term';
 function switchTab(name){
+  if (typeof peekClose === 'function') peekClose();   // 切标签时先收起全屏预览
   curTab = name;
   document.body.classList.remove('tab-term','tab-chat','tab-files','tab-browse');
   document.body.classList.add('tab-' + name);
@@ -1094,6 +1116,9 @@ function cleanMarkup(s){
     .replace(/<tool_call[^>]*>[\s\S]*?<\/tool_call[^>]*>/gi, '')
     .replace(/<\/?tool_calls?[^>]*>/gi, '')
     .replace(/Tool "[^"]{1,40}" does not exist in the current tool set\.?/g, '')
+    // 端口行交给「服务卡」显示，正文里就不必再重复一遍
+    .replace(/^[ \t]*PORT\s*[:：]\s*\d{2,5}[ \t]*$/gim, '')
+    .replace(/^[ \t]*FAILED\s*[:：][ \t]*/gim, '⚠️ ')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -1422,6 +1447,9 @@ async function streamChat(text){
   const box = $('chatlist');
   const emp = $('empty'); if (emp) emp.remove();
 
+  // 从这一刻起盯住新出现的监听端口：对话里起服务，卡片会自己冒出来
+  startSvcWatch();
+
   box.appendChild(msgEl({ role:'user', content:text }));
   const a = msgEl({ role:'assistant', content:'', model:chatModel });
   a.classList.add('pending');
@@ -1482,6 +1510,7 @@ async function streamChat(text){
           const o = JSON.parse(data);
           if (o.error){ acc += (acc ? '\n\n' : '') + '⚠️ ' + o.error; schedulePaint(); }
           else if (o.tool){ toolTxt = '🔧 ' + o.tool; schedulePaint(); }
+          else if (o.service){ addSvcCard(o.service); }
           else {
             const d = (o.choices && o.choices[0] && o.choices[0].delta &&
                        o.choices[0].delta.content) || '';
@@ -1508,6 +1537,7 @@ async function streamChat(text){
   }
   paint();
   chatStreaming = false; setSend();
+  stopSvcWatchSoon();
   paintHead();
   await loadConvs();
   if (curConv){
@@ -1515,6 +1545,196 @@ async function streamChat(text){
     if (c){ curConv.title = c.title; paintHead(); }
   }
   scrollDown(true);
+}
+
+/* ───────── 本地服务：对话里起的服务，旁边直接看 ─────────
+   链路：模型用 tmux 起服务 → 报 PORT 或被端口探测发现 → 后端验明真在监听
+        → SSE 推 service 事件 → 这里插一张卡 → 点开走 /preview/<port>/ 反代
+   卡片只负责「这一刻」，长期入口是顶部的「N 个服务」chip。 */
+let svcLive = [];                     // 当前真在跑的服务
+let svcSeen = new Set();              // 基线：开始盯之前就有的端口，不重复插卡
+let svcTimer = null, svcStopT = null;
+let svcDismissed = {};                // 用户主动停掉的端口，别再冒出来
+let peekPort = 0;
+
+function svcMeta(s){
+  // 进程名和命令首词经常重复（python3 / python3 -m http.server），去掉一个
+  const parts = (s.cmd || '').split(/\s+/).filter(Boolean);
+  if (parts.length && parts[0] === s.name) parts.shift();
+  return [s.name, parts.slice(0, 2).join(' ')].filter(Boolean).join(' · ') || '本机进程';
+}
+
+function svcCardEl(s){
+  const el = document.createElement('div');
+  el.className = 'msg svcmsg';
+  el.innerHTML =
+    '<div class="svc">' +
+      '<div class="svc-row">' +
+        '<span class="svc-dot"></span>' +
+        '<span class="svc-t">服务已启动</span>' +
+        '<span class="svc-port">:' + s.port + '</span>' +
+      '</div>' +
+      '<div class="svc-m">' + esc(svcMeta(s)) + '</div>' +
+      '<div class="svc-acts">' +
+        '<button class="svc-a prime">在这里打开</button>' +
+        '<button class="svc-a" data-tab="1">浏览标签</button>' +
+        '<button class="svc-a ghost" data-stop="1">停止</button>' +
+      '</div>' +
+    '</div>';
+  el.querySelector('.prime').onclick = () => peekOpen(s.port);
+  el.querySelector('[data-tab]').onclick = () => {
+    peekClose();
+    $('browaddr').value = String(s.port);
+    browGo();
+    switchTab('browse');
+  };
+  el.querySelector('[data-stop]').onclick = () => stopSvc(s.port, el);
+  return el;
+}
+
+function addSvcCard(s){
+  if (!s || !s.port || svcDismissed[s.port]) return;
+  const box = $('chatlist');
+  if (!box) return;
+  if (box.querySelector('[data-svcport="' + s.port + '"]')) return;   // 同一端口只留一张
+  const el = svcCardEl(s);
+  el.dataset.svcport = s.port;
+  const emp = $('empty'); if (emp) emp.remove();
+  box.appendChild(el);
+  scrollDown(true);
+  toast('服务已在 :' + s.port + ' 跑起来了');
+}
+
+async function fetchServices(){
+  try{
+    const r = await fetch('/api/ports');
+    const j = await r.json();
+    return j.services || [];
+  }catch(e){ return []; }
+}
+
+function paintSvcChip(){
+  const chip = $('svcchip'); if (!chip) return;
+  chip.hidden = svcLive.length === 0;
+  const num = $('svcnum'); if (num) num.textContent = svcLive.length;
+}
+
+function paintSvcSheet(){
+  const box = $('svcList'); if (!box) return;
+  const cnt = $('svcCount'); if (cnt) cnt.textContent = svcLive.length ? svcLive.length + ' 个' : '';
+  if (!svcLive.length){
+    box.innerHTML = '<div class="cs-empty">现在没有服务在跑。在对话里说「把这个项目跑起来」试试。</div>';
+    return;
+  }
+  box.innerHTML = '';
+  svcLive.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'cs-item svc-item';
+    el.innerHTML =
+      '<div class="cs-ico live"></div>' +
+      '<div class="cs-body"><div class="cs-t">localhost:' + s.port + '</div>' +
+      '<div class="cs-m"><span>' + esc(svcMeta(s)) + '</span></div></div>' +
+      '<div class="svc-x" title="停止">✕</div>';
+    el.onclick = ev => {
+      if (ev.target.classList.contains('svc-x')){ stopSvc(s.port, null); return; }
+      closeSvcs(); peekOpen(s.port);
+    };
+    box.appendChild(el);
+  });
+}
+
+async function refreshServices(){
+  const raw = await fetchServices();
+  // 端口断了就忘掉「我停过它」：同一个端口再起一次，卡片要能重新出现
+  const now = Date.now();
+  Object.keys(svcDismissed).forEach(p => {
+    if (now - svcDismissed[p] > 10000 && !raw.some(s => String(s.port) === p)) delete svcDismissed[p];
+  });
+  const list = raw.filter(s => !svcDismissed[s.port]);
+  svcLive = list;
+  paintSvcChip();
+  paintSvcSheet();
+  return list;
+}
+
+async function startSvcWatch(){
+  stopSvcWatch();
+  // 先把「现在就有」的端口记成基线，免得老服务被当成刚起的插一堆卡
+  const list = await refreshServices();
+  if (svcTimer) return;                     // 期间被别的调用抢先启动了
+  svcSeen = new Set(list.map(s => s.port));
+  svcTimer = setInterval(async () => {
+    const now = await refreshServices();
+    now.forEach(s => {
+      if (!svcSeen.has(s.port)){
+        svcSeen.add(s.port);
+        addSvcCard(s);
+      }
+    });
+  }, 4000);
+}
+
+function stopSvcWatch(){
+  if (svcTimer){ clearInterval(svcTimer); svcTimer = null; }
+  if (svcStopT){ clearTimeout(svcStopT); svcStopT = null; }
+}
+
+function stopSvcWatchSoon(){
+  // 回复结束不等于活干完：装依赖、起服务常常比模型说话慢，再盯 90 秒
+  if (svcStopT) clearTimeout(svcStopT);
+  svcStopT = setTimeout(() => {
+    if (svcTimer){ clearInterval(svcTimer); svcTimer = null; }
+  }, 90000);
+}
+
+async function stopSvc(port, el){
+  if (!confirm('停止本机 :' + port + ' 上的服务？')) return;
+  try{
+    const r = await fetch('/api/services/stop', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({port})});
+    const j = await r.json();
+    if (j.error){ toast(j.error); return; }
+    svcDismissed[port] = Date.now();
+    if (el) el.remove();
+    if (peekPort === port) peekClose();
+    await refreshServices();
+    toast('已停止 :' + port);
+  }catch(e){ toast('停止失败'); }
+}
+
+function openSvcs(){ refreshServices(); $('svcsheet').classList.add('show'); }
+function closeSvcs(){ $('svcsheet').classList.remove('show'); }
+
+/* ── 全屏预览层：不离开对话就能看到页面 ── */
+function peekOpen(port){
+  if (!port) return;
+  peekPort = port;
+  $('pkUrl').textContent = 'localhost:' + port;
+  $('pkFrame').src = sc('/preview/' + port + '/?t=' + Date.now());
+  $('peek').classList.add('show');
+  document.body.classList.add('peeking');
+}
+
+function peekClose(){
+  if (!peekPort && !$('peek').classList.contains('show')) return;
+  peekPort = 0;
+  $('peek').classList.remove('show');
+  document.body.classList.remove('peeking');
+  // 等收起动画走完再卸载，否则 iOS 上会闪一下白底
+  setTimeout(() => {
+    if (!$('peek').classList.contains('show')) $('pkFrame').src = 'about:blank';
+  }, 240);
+}
+
+function initServices(){
+  $('svcchip').onclick = openSvcs;
+  $('svcCloser').onclick = closeSvcs;
+  $('svcsheet').onclick = e => { if (e.target.id === 'svcsheet') closeSvcs(); };
+  $('pkClose').onclick = peekClose;
+  $('pkReload').onclick = () => { if (peekPort) $('pkFrame').src = sc('/preview/' + peekPort + '/?t=' + Date.now()); };
+  $('pkOut').onclick = () => { if (peekPort) window.open(sc('/preview/' + peekPort + '/'), '_blank'); };
+  refreshServices();
 }
 
 /* ───────── 弹窗通用 ───────── */
@@ -1694,6 +1914,7 @@ async function loadChatConfig(){
 
 /* ── 启动（真正的拉取交给 enter()，避免未登录时 401）── */
 initBrowse();
+initServices();
 paintHead();
 setSend();
 

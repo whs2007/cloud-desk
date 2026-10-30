@@ -32,9 +32,9 @@
 | 标签 | 你能做什么 |
 |---|---|
 | 💻 **终端** | 真 PTY，`cd` / 跑项目 / `Ctrl+C` / Tab 补全；会话托管在 tmux，关页面、重启服务都还在 |
-| 💬 **对话** | 免 Key（复用本机 `codebuddy` CLI 登录态）或自带 OpenAI 兼容接口；多会话、真流式 |
+| 💬 **对话** | 免 Key（复用本机 `codebuddy` CLI 登录态）或自带 OpenAI 兼容接口；能克隆、能装依赖、能起服务，跑完直接弹出预览 |
 | 📁 **文件** | 浏览 / 上传 / 新建 / 在线编辑（CodeMirror），按类型着色、显示大小 |
-| 🌐 **浏览** | 终端跑起来的端口自动变胶囊，点开即内嵌预览；也可用服务端 Chromium 打开任意网站 |
+| 🌐 **浏览** | 终端或对话里跑起来的端口自动变胶囊，点开即内嵌预览；也可用服务端 Chromium 打开任意网站 |
 
 ## 为什么是「手机优先」
 
@@ -105,7 +105,8 @@ DESK_PASSWORD='一个足够长的密码' python3 server.py
 | `DESK_PASSWORD` | 随机生成 | 访问密码，仅首次启动（无 `auth.json`）时生效 |
 | `WORKSPACE_ROOT` | `/workspace` → `~/workspace` | 文件树与终端的工作区根目录 |
 | `DESK_TMUX_SESSION` | `desk` | tmux 会话名，同名会话被所有访问端共享 |
-| `DESK_CHAT_TOOLS` | 空（禁用） | 平台通道允许的工具，如 `Read,Glob,Grep`；留空 = 纯对话 |
+| `DESK_CHAT_TOOLS` | `Bash,Read,Glob,Grep,Write,Edit` | 平台通道放行的工具。设 `Read,Glob,Grep` = 只读；设空字符串 = 纯聊天，不许动手 |
+| `DESK_HIDE_PORTS` | `8089` | 端口探测里额外藏掉的端口（逗号分隔），用于屏蔽宿主自带服务 |
 | `DESK_PROXY_ALLOW_PRIVATE` | 空（禁止） | 设为 `1` 才允许 `/proxy` 访问内网。**仅纯内网部署时打开** |
 | `BRIDGE_SECRET` | 自动生成 | 本地脚本写入对话记录的校验密钥（`data/bridge_secret`） |
 
@@ -118,9 +119,31 @@ DESK_PASSWORD='一个足够长的密码' python3 server.py
 - **平台通道（免 Key）**：机器上装了 `codebuddy` CLI 且登录过，就直接复用这份登录态；实现上只是把 CLI 当本地模型网关，`--session-id/--resume` 续上下文，没做任何逆向。
 - **自有 API（BYO）**：任何兼容 OpenAI `/chat/completions` 的服务——OpenAI、DeepSeek、通义、智谱、Moonshot、one-api 都行。
 
-安全默认：平台通道**禁用全部工具**（`--tools ""`），模型只能说话。想让它读工作区，设 `DESK_CHAT_TOOLS="Read,Glob,Grep"`。
+平台通道默认**开着工具**（`Bash,Read,Glob,Grep,Write,Edit`，通过 `--permissions.allow` 放行），所以它能真的克隆仓库、装依赖、起服务。想收回去：`DESK_CHAT_TOOLS="Read,Glob,Grep"`（只读）或 `DESK_CHAT_TOOLS=""`（纯聊天）。开头那句话很重要——默认配置等于把这台机器的 shell 交给模型，只适合自己用的私有部署。
 
 对话页标题下面会写明当前能力（`仅对话` / `可读文件` / `可执行`），省得你试了才发现它动不了手。生成过程中右下角是停止键，随时能打断。
+
+### 在对话里把项目跑起来，旁边直接看
+
+这是本项目的核心闭环，一句话就能走完：
+
+> 「把这个项目拉下来跑起来：`https://github.com/xxx/yyy`」
+
+1. 模型用 Bash 克隆到工作区、看清结构、选最轻的启动方式；
+2. 用 `tmux new-session -d -s web-<端口> -c <项目目录> '<启动命令>'` 放到后台——**不会**把你晾在一个跑不完的前台命令上；
+3. `curl` 自检拿到 2xx/3xx 后，回复末尾写一行 `PORT: <端口>`；
+4. 后端发现这个端口**真的在监听**（不是模型瞎报的数字），通过 SSE 推一张「服务卡」到对话里；
+5. 点卡上的「在这里打开」，全屏 iframe 走 `/preview/<端口>/` 反代，不离开对话就看到页面。
+
+服务卡出现前，前端每 4 秒轮询一次新监听端口，所以即使模型忘了写 `PORT:`，卡片也会自己冒出来。顶栏绿色的 `● N` 是长期入口：列出所有在跑的服务，可逐个打开或停止。
+
+<p align="center">
+  <img src="docs/screenshots/05-service-card.png" alt="对话里的服务卡" width="32%">
+  <img src="docs/screenshots/06-service-preview.png" alt="对话内全屏预览" width="32%">
+  <img src="docs/screenshots/07-service-sheet.png" alt="运行中的服务列表" width="32%">
+</p>
+
+反代不是简单转发，做了三件让 SPA 也能跑的事：注入 `<base>`、把标签属性里以 `/` 开头的地址改写成 `/preview/<端口>/...`、把 302 的 `Location` 拉回前缀。POST 也会转发，登录表单能提交。
 
 **会话存储**：SQLite 单文件（`data/desk.db`，WAL）。两张表：`conversations`、`messages`。不用 jsonl 是因为要按会话过滤、并发写防撕裂、可排序；不引 Redis/Postgres 是因为单机工具多一个服务就多一个会坏的地方。备份 = 拷走这一个文件。
 
@@ -138,10 +161,12 @@ DESK_PASSWORD='一个足够长的密码' python3 server.py
 | Bridge 密钥 | 每实例随机，`data/bridge_secret`（600），请求头校验 + 恒定时间比较 |
 | SSRF 防护 | `/proxy` 先解析真实 IP 再按网段判定，拦 `127/8`、`10/8`、`172.16/12`、`192.168/16`、`169.254/16`、CGNAT、IPv6 本地/映射、`metadata.*`、`*.internal`；**不跟随重定向** |
 | 路径穿越 | 所有文件接口 `resolve()` 后做前缀校验，越界直接拒 |
+| 服务停止 | `/api/services/stop` 拒绝停系统端口（`<1024`、自身端口、`DESK_HIDE_PORTS`），拒绝停云桌面自身的常驻进程 |
 
 仍然要注意：
 
 - 终端 = 真 shell，拿到密码的人就能执行任意命令；
+- **对话默认也能执行命令**（`DESK_CHAT_TOOLS` 含 `Bash`）。这是产品选择——不开就没法"拉项目、跑起来"；不放心就设成只读或留空；
 - `/proxy` 的"解析后再请求"理论上仍有 DNS rebinding 窗口，安全要求极高时换固定出口白名单；
 - 平台通道消耗的是**这台机器**的登录额度，公开分享前请切到自有 API。
 
@@ -180,7 +205,16 @@ data/                  # 会话库（gitignore）
 反代没转发 WebSocket 升级头。补上 `Upgrade` / `Connection` 两行，或等它自动降级为轮询。
 
 **我让它把某个 GitHub 项目拉下来跑，它只回了一堆命令？**
-这是设计如此：对话通道默认没开工具，它碰不到 shell。它给的那串命令复制到 💻 终端 就能用；想让它在对话里直接执行，得设 `DESK_CHAT_TOOLS`（等于把这台机器的 shell 交给模型，自己权衡）。早期版本遇到这种情况会吐出一堆 `<tool_call>` 标记，现在输出层会过滤掉，并明确告诉你「去终端执行」。
+先确认对话页标题下面写的是「平台通道 · 可执行」而不是「· 仅对话」。是后者说明 `DESK_CHAT_TOOLS` 被设空或设成了只读——放开它才能动手。
+
+**它说跑起来了，但点开是文件列表 / 白屏？**
+大概率是服务的根目录不对（在 `/workspace` 而不是项目目录里起的），或者依赖没装完。让它「重新在这个项目目录里起一遍」即可；真跑的是 `tmux new-session -d -c <项目目录>`，你在 💻 终端里 `tmux ls` 能看到会话名。
+
+**`git clone` 一直超时？**
+沙箱到 GitHub 的直连经常断（TLS 中断）。模型会自己换 jsdelivr / codeload zip 之类的镜像，提示词里也要求"同一个域名最多试 2 次"。真的拉不动，就在终端里手动上传 zip。
+
+**页面样式错乱、热更新不生效？**
+反代能改 HTML 里的绝对路径，改不了 JS 里拼出来的接口地址，也不转发 WebSocket——所以 Vite/Next 的 HMR 会失败，改完点 ⟳ 刷新即可。完全依赖 WebSocket 的应用（部分协作工具）建议用 `↗` 在系统浏览器里开。
 
 **忘记密码？**
 删掉 `auth.json` 重启会重新生成并打印；或 `DESK_PASSWORD=新密码 python3 server.py`（需先删 `auth.json`）。
@@ -196,6 +230,8 @@ WorkBuddy 给的是一台沙箱容器，不是一个可调用的配置服务，�
 - **没有 GPU**，别在容器里加载大模型；8 GB 内存是硬墙，容易 OOM
 - 截图浏览器每页 0.5–2 秒延迟，重度 JS / 视频站点体验一般
 - 单机单进程，没有多租户隔离；要多人用请各自部署
+- 对话里跑一次的冷启动 + 装依赖可能几分钟，别指望秒回；`npm install` 那种堵在同一个域名上反复重试的，提示词已要求最多试两次就换路子
+- 预览反代不转发 WebSocket，HMR/协作类应用会退化（刷新可用，实时不变）
 
 ## 参与
 

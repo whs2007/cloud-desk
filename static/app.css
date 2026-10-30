@@ -904,3 +904,90 @@ body:not(.tab-term) #keys{display:none !important}
 .md-table th{background:var(--surface);font-weight:600;color:var(--text)}
 .md-table tr:last-child td{border-bottom:none}
 .md-table tbody tr:nth-child(even){background:rgba(255,255,255,.015)}
+
+/* ── 本机服务：chip / 服务卡 / 全屏预览 ──
+   对话里让 AI 起服务后，用户要的是「一眼看到它跑在哪、点开就看」，
+   所以这里三件套：顶栏 chip 汇总数量、消息流里插卡、点卡全屏 iframe 预览。 */
+.pill.live{border-color:rgba(94,214,168,.32);background:rgba(94,214,168,.10)}
+.pill.live .v{color:#5ed6a8}
+.pill.live .dot{
+  width:6px;height:6px;border-radius:50%;background:#5ed6a8;
+  box-shadow:0 0 0 3px rgba(94,214,168,.16);animation:svcpulse 1.9s ease-in-out infinite;
+}
+@keyframes svcpulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+.svcmsg{display:block;max-width:100%}
+.svc{
+  border:1px solid rgba(94,214,168,.24);
+  background:linear-gradient(180deg,rgba(94,214,168,.075),rgba(94,214,168,.02));
+  border-radius:14px;padding:12px 13px;
+}
+.svc-row{display:flex;align-items:center;gap:7px}
+.svc-dot{
+  width:7px;height:7px;border-radius:50%;background:#5ed6a8;
+  box-shadow:0 0 0 3px rgba(94,214,168,.15);
+}
+.svc-t{font-size:12px;color:#e8f7f1;font-weight:600}
+.svc-port{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:#5ed6a8}
+.svc-m{
+  margin-top:5px;font-size:10.5px;color:var(--faint);
+  font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.svc-acts{display:flex;gap:7px;margin-top:11px}
+.svc-a{
+  flex:1;padding:8px 6px;border-radius:9px;font-size:11.5px;font-family:inherit;
+  background:var(--surface);border:1px solid var(--stroke);color:var(--text-2);
+  cursor:pointer;transition:transform .12s,background .15s;
+}
+.svc-a.prime{
+  background:rgba(94,214,168,.14);border-color:rgba(94,214,168,.32);
+  color:#5ed6a8;font-weight:600;
+}
+.svc-a.ghost{flex:0 0 auto;padding-left:12px;padding-right:12px;color:var(--faint)}
+.svc-a:active{transform:scale(.98);background:var(--surface-hi)}
+
+.svc-item .cs-ico.live{background:rgba(94,214,168,.14);border-color:rgba(94,214,168,.3)}
+.svc-item .cs-ico.live::after{
+  content:"";width:7px;height:7px;border-radius:50%;background:#5ed6a8;
+}
+.svc-x{flex:0 0 auto;color:var(--faint);font-size:14px;padding:4px 6px;cursor:pointer}
+.svc-x:active{color:var(--err)}
+
+#svcsheet{
+  position:fixed;inset:0;z-index:9300;display:none;
+  background:rgba(0,0,0,.55);
+  -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);
+}
+#svcsheet.show{display:block;animation:fade .2s var(--ease)}
+
+#peek{
+  position:fixed;inset:0;z-index:9400;display:none;flex-direction:column;
+  background:#0b0b0d;
+  padding-top:env(safe-area-inset-top);
+  padding-bottom:env(safe-area-inset-bottom);
+}
+#peek.show{display:flex;animation:fade .18s var(--ease)}
+.pk-bar{
+  display:flex;align-items:center;gap:8px;padding:8px 10px;
+  border-bottom:1px solid var(--stroke);background:rgba(20,20,23,.97);
+}
+.pk-b{
+  flex:0 0 auto;width:30px;height:30px;border-radius:9px;font-size:14px;
+  background:var(--surface);border:1px solid var(--stroke);color:var(--text-2);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:inherit;
+}
+.pk-b:active{background:var(--surface-hi);color:var(--text)}
+.pk-url{
+  flex:1;min-width:0;font-family:var(--mono);font-size:11px;color:var(--text-2);
+  background:var(--surface);border:1px solid var(--stroke);border-radius:9px;
+  padding:7px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+#pkFrame{flex:1;width:100%;border:0;background:#fff}
+.pk-tip{
+  padding:6px 12px;font-size:10px;color:var(--faint);text-align:center;
+  border-top:1px solid var(--stroke);background:rgba(20,20,23,.97);
+}
+
+/* .pill 用了 display:flex，会盖掉 [hidden] 的默认 display:none，
+   所以「0 个服务」时 chip 仍然冒出来。补一条显式规则。 */
+#svcchip[hidden]{display:none!important}
