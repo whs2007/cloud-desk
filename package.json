@@ -1,6 +1,6 @@
 {
   "name": "cloud-desk",
-  "version": "18.0.0",
+  "version": "19.0.0",
   "private": true,
   "description": "手机点开即用的 Linux 工作台。此文件只用于记录 static/vendor 下前端资源的来源与版本，运行时不依赖 Node。",
   "license": "MIT",

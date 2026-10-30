@@ -295,7 +295,9 @@ body.tab-term #tab-term{bottom:calc(var(--tbh) + var(--kbh))}
   font-family:var(--mono);font-size:9px;color:var(--faint);
   padding:1px 5px;border-radius:3px;background:var(--surface);
 }
-.msg.pending{opacity:.6}
+.msg.pending{opacity:1}
+/* 等待时只淡正文，状态条要保持醒目——它正是用来安抚等待的 */
+.msg.pending .md{opacity:.5}
 .msg .tool{
   font-size:10.5px;color:var(--dim);margin:2px 0 7px;font-family:var(--mono);
   display:flex;align-items:center;gap:6px;white-space:nowrap;
@@ -991,3 +993,79 @@ body:not(.tab-term) #keys{display:none !important}
 /* .pill 用了 display:flex，会盖掉 [hidden] 的默认 display:none，
    所以「0 个服务」时 chip 仍然冒出来。补一条显式规则。 */
 #svcchip[hidden]{display:none!important}
+
+/* ── 运行状态：把「等」这件事变成看得见的东西 ──
+   平台通道冷启动 10~20 秒、Bash 可能跑几分钟，这段时间没有正文。
+   这块存在的唯一目的：让用户知道它在干活，而不是卡死了。 */
+.run{
+  margin:0 0 9px;border:1px solid var(--stroke);border-radius:11px;
+  background:rgba(255,255,255,.022);overflow:hidden;
+  transition:background .2s,border-color .2s;
+}
+.run-hd{
+  display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer;
+  -webkit-tap-highlight-color:transparent;
+}
+.run-dot{
+  width:6px;height:6px;border-radius:50%;background:var(--accent);flex:0 0 auto;
+  animation:runpulse 1.4s ease-in-out infinite;
+}
+@keyframes runpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.8)}}
+.run-t{font-size:11.5px;color:var(--text-2);font-weight:520;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.run-s{
+  margin-left:auto;flex:0 0 auto;font-family:var(--mono);font-size:10.5px;
+  color:var(--faint);font-variant-numeric:tabular-nums;
+}
+.run-hint{font-size:10px;color:var(--faint);padding:0 10px 8px;margin-top:-3px}
+.run-th{
+  display:none;padding:0 10px 8px;font-size:10.5px;color:var(--faint);
+  font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.run-th.on{display:block}
+.run-steps{padding:0 10px 10px;display:flex;flex-direction:column;gap:7px}
+
+/* 三列：图标 / 命令 / 耗时。输出块要占满后两列另起一行，
+   用 flex 会被挤到右边去——这里必须用 grid。 */
+.stp{display:grid;grid-template-columns:11px minmax(0,1fr) auto;
+  align-items:center;gap:7px;min-width:0}
+.stp-i{
+  flex:0 0 auto;width:11px;height:11px;display:flex;align-items:center;
+  justify-content:center;font-size:9px;line-height:1;color:var(--faint);
+}
+.stp.live .stp-i{
+  border-radius:50%;border:1.5px solid var(--accent);border-top-color:transparent;
+  animation:spin .8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.stp.ok .stp-i{color:#5ed6a8}
+.stp.bad .stp-i{color:var(--err)}
+.stp code{
+  min-width:0;font-family:var(--mono);font-size:10.5px;color:var(--dim);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.stp.live code{color:var(--text-2)}
+.stp.bad code{color:#e58b8b}
+.stp-s{
+  flex:0 0 auto;font-family:var(--mono);font-size:10px;color:var(--faint);
+  font-variant-numeric:tabular-nums;
+}
+.stp-out{
+  display:none;grid-column:2/4;margin:3px 0 2px;padding:6px 8px;border-radius:7px;
+  background:rgba(0,0,0,.3);font-family:var(--mono);font-size:9.5px;line-height:1.5;
+  color:var(--dim);white-space:pre-wrap;word-break:break-all;
+  max-height:92px;overflow:auto;
+}
+.run.open .stp-out{display:block}
+
+/* 正文一开始就把过程收起来——用户在读答案，不是在读日志 */
+.run.compact{background:transparent;border-color:transparent}
+.run.compact .run-hd{
+  border:1px solid var(--stroke);border-radius:8px;padding:6px 9px;
+}
+.run.compact .run-t{font-size:10.5px;color:var(--faint);font-weight:400}
+.run.compact .run-steps,.run.compact .run-hint{display:none}
+.run.compact.open .run-steps{display:flex;padding:8px 9px 9px}
+.run.compact .run-dot{width:4px;height:4px}
+.run.done .run-dot{animation:none;background:var(--faint);opacity:.55}
+.run.done .run-s{color:var(--faint)}

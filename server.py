@@ -1549,8 +1549,23 @@ async def chat_completions(request: Request):
                         acc.append(ev["text"])
                         yield _sse({"choices": [{"delta": {"content": ev["text"]}}]})
                     elif t == "tool":
-                        tools.append(ev["text"])
-                        yield _sse({"tool": ev["text"]})
+                        # start：只知道名字；detail：补上命令；done：带耗时与输出尾巴
+                        if ev.get("state") == "start":
+                            tools.append(ev.get("name", ""))
+                        yield _sse({"tool": {k: ev.get(k) for k in
+                                             ("state", "id", "name", "detail",
+                                              "ms", "ok", "out", "seq")}})
+                    elif t == "stage":
+                        yield _sse({"stage": ev.get("stage"),
+                                    "text": ev.get("text")})
+                    elif t == "thinking":
+                        yield _sse({"thinking": ev.get("text")})
+                    elif t == "tick":
+                        # 注释行保活 + 数据行告诉前端「静默多久了、卡在哪一步」
+                        yield b": ping\n\n"
+                        yield _sse({"tick": {"idle": ev.get("idle"),
+                                             "phase": ev.get("phase"),
+                                             "tool": ev.get("tool")}})
                     elif t == "port":
                         # 模型报的端口先验一遍：真在监听才推给前端当「服务卡」
                         p = int(ev.get("port") or 0)
@@ -1569,6 +1584,8 @@ async def chat_completions(request: Request):
                     elif t == "error":
                         yield _sse({"error": ev["text"]})
                     elif t == "done":
+                        if ev.get("tools"):
+                            tools[:] = ev["tools"]
                         # 兜底：模型忘了写 PORT: 时，done 里还带着本轮捞到的候选端口
                         for p in (ev.get("ports") or []):
                             try:
@@ -1586,6 +1603,11 @@ async def chat_completions(request: Request):
                                                      "可以再问一句「跑到哪一步了」，或到 💻 终端看完整过程。"})
                             else:
                                 yield _sse({"error": "平台通道没有返回内容，请换个模型或稍后重试"})
+                yield b"data: [DONE]\n\n"
+            except Exception as e:
+                # 后端自己炸了也要说话：否则前端看到的是「流突然没了」，
+                # 和卡死一模一样，用户只能干等。
+                yield _sse({"error": "通道异常：%s" % str(e)[:200]})
                 yield b"data: [DONE]\n\n"
             finally:
                 # 客户端中途断开时也要把已生成的部分存下来
@@ -1605,6 +1627,8 @@ async def chat_completions(request: Request):
 
     def gen():
         acc = []
+        wrote = False
+        yield _sse({"stage": "spawn", "text": "正在请求模型"})
         try:
             r = _requests.post(cfg_url, json={"model": model, "messages": payload, "stream": True},
                                headers={"Authorization": "Bearer " + cfg["api_key"],
@@ -1625,6 +1649,9 @@ async def chat_completions(request: Request):
                         d = o["choices"][0]["delta"].get("content", "")
                         if d:
                             acc.append(d)
+                            if not wrote:      # 首个字：告诉前端「开始出字了」
+                                wrote = True
+                                yield _sse({"stage": "writing", "text": "开始作答"})
                     except Exception:
                         pass
                     yield (line + "\n\n").encode()

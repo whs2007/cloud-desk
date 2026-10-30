@@ -1441,6 +1441,176 @@ async function chatSend(){
   await streamChat(v);
 }
 
+/* ───────── 运行状态条 ─────────
+   平台通道冷启动要 10~20 秒，Bash 跑起来可能几分钟，中间一个字都没有。
+   以前这段时间屏幕上只有一个转圈，用户分不清「在干活」还是「已经死了」。
+   现在把阶段、当前命令、每一步耗时都摆出来——不是为了好看，是为了让人安心等。 */
+function makeRunner(){
+  const t0 = Date.now();
+  const el = document.createElement('div');
+  el.className = 'run';
+  el.innerHTML =
+    '<div class="run-hd">' +
+      '<span class="run-dot"></span>' +
+      '<span class="run-t">正在连接</span>' +
+      '<span class="run-s">0s</span>' +
+    '</div>' +
+    '<div class="run-hint">冷启动通常 5~15 秒，别急着关</div>' +
+    '<div class="run-th"></div>' +
+    '<div class="run-steps"></div>';
+
+  const hd  = el.querySelector('.run-hd');
+  const tEl = el.querySelector('.run-t');
+  const sEl = el.querySelector('.run-s');
+  const hintEl = el.querySelector('.run-hint');
+  const thEl = el.querySelector('.run-th');
+  const stEl = el.querySelector('.run-steps');
+
+  let steps = [], live = null, writing = false, stopped = false;
+
+  const fmt = s => s >= 60
+    ? Math.floor(s / 60) + 'm' + String(Math.round(s % 60)).padStart(2, '0') + 's'
+    : Math.round(s) + 's';
+
+  // 本地每秒跳一次：即使后端一个字节都不发，用户也看得见时间在走。
+  // 这是「没卡死」最便宜也最有效的证据。
+  const timer = setInterval(() => {
+    if (stopped) return;
+    const tot = (Date.now() - t0) / 1000;
+    sEl.textContent = fmt(tot);
+    if (live && !live.dead) live.tick((Date.now() - live.t0) / 1000);
+  }, 1000);
+
+  hd.addEventListener('click', () => el.classList.toggle('open'));
+
+  const mkStep = (id, name, detail) => {
+    const d = document.createElement('div');
+    d.className = 'stp live';
+    d.innerHTML = '<span class="stp-i"></span><code></code><span class="stp-s">0s</span>';
+    d.querySelector('code').textContent = detail || name || '执行中';
+    stEl.appendChild(d);
+    const o = {
+      id, t0: Date.now(), el: d, dead: false,
+      setText(t){
+        const c = d.querySelector('code');
+        if (t && c.textContent !== t) c.textContent = t;
+      },
+      tick(s){ d.querySelector('.stp-s').textContent = s < 1 ? '' : fmt(s); },
+      done(ms, ok, out){
+        o.dead = true;
+        d.classList.remove('live');
+        d.classList.add(ok ? 'ok' : 'bad');
+        d.querySelector('.stp-i').textContent = ok ? '✓' : '✕';
+        d.querySelector('.stp-s').textContent =
+          !ms ? '' : (ms < 1000 ? '<1s' : fmt(ms / 1000));
+        if (out){
+          const pre = document.createElement('pre');
+          pre.className = 'stp-out';
+          pre.textContent = out;
+          d.appendChild(pre);
+        }
+        if (live === o) live = null;
+      }
+    };
+    steps.push(o); live = o;
+    el.classList.remove('compact');
+    return o;
+  };
+
+  const byId = id => steps.find(s => s.id === id && !s.dead) || null;
+
+  const STAGE = {
+    spawn:    ['正在唤醒模型', '冷启动通常 5~15 秒，别急着关'],
+    ready:    ['模型已就绪', '马上开始'],
+    thinking: ['模型在思考', '还没到能执行的那一步'],
+    tool:     ['执行命令', '命令在后台跑，结束会自动接着做'],
+    writing:  ['正在作答', ''],
+  };
+
+  el.api = {
+    stage(st, text){
+      const m = STAGE[st] || [text || '', ''];
+      if (st === 'writing'){ writing = true; return; }
+      // 唤醒阶段把模型名带上：用户能确认「我选的那个模型在跑」，不是瞎等
+      if (st === 'spawn' && typeof chatModel === 'string' && chatModel)
+        tEl.textContent = '正在唤醒 ' + chatModel;
+      else if (m[0]) tEl.textContent = m[0];
+      hintEl.textContent = m[1] || '';
+      hintEl.style.display = m[1] ? '' : 'none';
+      el.classList.remove('compact');
+    },
+    tool(ev){
+      const st = ev.state, detail = ev.detail || '';
+      thEl.classList.remove('on');   // 开始执行了，刚才那句思考就没必要占着地方
+      let o = ev.id ? byId(ev.id) : null;
+      if (st === 'start'){
+        if (!o) mkStep(ev.id, ev.name, detail || (ev.name || '执行中'));
+        tEl.textContent = '执行 ' + (ev.name || '命令');
+        hintEl.textContent = '命令在后台跑，结束会自动接着做';
+      } else if (st === 'detail'){
+        if (!o) o = mkStep(ev.id, ev.name, detail);
+        else o.setText(detail);
+      } else if (st === 'done'){
+        if (o) o.done(ev.ms | 0, ev.ok !== false, ev.out || '');
+        tEl.textContent = '整理结果';
+        hintEl.textContent = steps.length ? ('已完成 ' + steps.length + ' 步') : '';
+      }
+      if (!writing) el.classList.remove('compact');
+    },
+    tick(t){
+      // 后端静默时的秒表：把「在跑，但慢」说清楚，别让人以为死了。
+      // 文案按阶段换——思考时说「在想」，执行时说「命令在跑」，
+      // 一句「已静默 45s」放在错误的地方只会更让人慌。
+      if (writing) return;
+      const idle = (t && t.idle) | 0;
+      if (idle < 20) return;
+      const ph = (t && t.phase) || 'thinking';
+      const tip = ph === 'tool'
+        ? '命令还在跑（装依赖/编译可能几分钟），跑完会自动继续'
+        : ph === 'spawn'
+          ? '还在唤醒模型，冷启动偶尔要 20 秒以上'
+          : '模型还在想，这类问题通常 30~60 秒';
+      hintEl.textContent = tip + ' · 已等 ' + idle + 's';
+      hintEl.style.display = '';
+    },
+    think(txt){
+      const s = String(txt || '').split('\n').filter(x => x.trim()).pop();
+      // 单个 "." 或几个字母的碎片没信息量，显示出来只是一个孤零零的点
+      if (!s || s.trim().length < 4 || writing) return;
+      thEl.textContent = s.trim().slice(-90);
+      thEl.classList.add('on');
+    },
+    // 正文一到就收成一行：用户此时在读答案，不想看日志
+    compact(){
+      writing = true;
+      thEl.classList.remove('on');
+      el.classList.add('compact');
+      tEl.textContent = steps.length ? ('执行过程 · ' + steps.length + ' 步') : '回答';
+      hintEl.style.display = 'none';
+    },
+    finish(why){
+      stopped = true;
+      clearInterval(timer);
+      const tot = (Date.now() - t0) / 1000;
+      sEl.textContent = fmt(tot);
+      el.classList.add('done');
+      if (writing) el.classList.add('compact');
+      steps.forEach(s => { if (!s.dead && !s.el.classList.contains('ok')
+                              && !s.el.classList.contains('bad')){
+        s.el.classList.remove('live');
+        s.el.querySelector('.stp-i').textContent = '·';
+      }});
+      if (why){
+        tEl.textContent = why;
+        hintEl.style.display = 'none';
+      } else if (steps.length && !writing){
+        tEl.textContent = '完成 · ' + steps.length + ' 步';
+      }
+    }
+  };
+  return el;
+}
+
 async function streamChat(text){
   chatStreaming = true; setSend();
 
@@ -1453,16 +1623,20 @@ async function streamChat(text){
   box.appendChild(msgEl({ role:'user', content:text }));
   const a = msgEl({ role:'assistant', content:'', model:chatModel });
   a.classList.add('pending');
+  const bub = a.querySelector('.bub');
   const md = a.querySelector('.md');
-  md.innerHTML = '<span class="typing"></span>';
+  md.innerHTML = '';
+
+  // 状态条常驻在气泡顶部：先告诉用户「在连」，再逐段汇报
+  const run = makeRunner();
+  bub.insertBefore(run, md);
+
   box.appendChild(a);
   box.scrollTop = box.scrollHeight;
 
-  let acc = '', toolTxt = '', lastPaint = 0, raf = null;
+  let acc = '', lastPaint = 0, raf = null, compacted = false;
   const paint = () => {
-    md.innerHTML = acc ? mdRender(cleanMarkup(acc)) : '<span class="typing"></span>';
-    const tw = a.querySelector('.tool');
-    if (tw) tw.textContent = toolTxt;
+    md.innerHTML = acc ? mdRender(cleanMarkup(acc)) : '';
     scrollDown(false);
   };
   const schedulePaint = () => {
@@ -1473,6 +1647,7 @@ async function streamChat(text){
 
   const ctrl = new AbortController();
   chatAbort = ctrl;
+  let stoppedByUser = false;
 
   try{
     const r = await fetch('/api/chat/completions', {
@@ -1493,6 +1668,7 @@ async function streamChat(text){
     if (!r.ok || !r.body){
       let j = {}; try{ j = await r.json(); }catch(e){}
       a.classList.remove('pending');
+      run.api.finish();
       md.innerHTML = '<span style="color:var(--err)">' + esc(j.error || ('HTTP ' + r.status)) + '</span>';
       chatStreaming = false; setSend(); paintHead();
       return;
@@ -1508,19 +1684,29 @@ async function streamChat(text){
         const data = line.slice(5).trim(); if (data === '[DONE]') continue;
         try{
           const o = JSON.parse(data);
-          if (o.error){ acc += (acc ? '\n\n' : '') + '⚠️ ' + o.error; schedulePaint(); }
-          else if (o.tool){ toolTxt = '🔧 ' + o.tool; schedulePaint(); }
+          if (o.error){
+            acc += (acc ? '\n\n' : '') + '⚠️ ' + o.error;
+            run.api.finish(); schedulePaint();
+          }
+          else if (o.stage){ run.api.stage(o.stage, o.text); }
+          else if (o.tool){ run.api.tool(o.tool); }
+          else if (o.tick){ run.api.tick(o.tick); }
+          else if (o.thinking){ run.api.think(o.thinking); }
           else if (o.service){ addSvcCard(o.service); }
           else {
             const d = (o.choices && o.choices[0] && o.choices[0].delta &&
                        o.choices[0].delta.content) || '';
-            if (d){ acc += d; schedulePaint(); }
+            if (d){
+              if (!compacted){ compacted = true; run.api.compact(); }
+              acc += d; schedulePaint();
+            }
           }
         }catch(e){}
       }
     }
   }catch(e){
     if (e && e.name === 'AbortError'){
+      stoppedByUser = true;
       if (acc) acc += '\n\n_（已停止）_';       // 保留已经生成的部分
     } else if (!acc){
       acc = '⚠️ 网络中断：' + (e && e.message ? e.message : e);
@@ -1530,11 +1716,7 @@ async function streamChat(text){
   if (raf) clearTimeout(raf);
   chatAbort = null;
   a.classList.remove('pending');
-  if (toolTxt){
-    let tw = a.querySelector('.tool');
-    if (!tw){ tw = document.createElement('div'); tw.className = 'tool'; a.querySelector('.bub').prepend(tw); }
-    tw.textContent = toolTxt;
-  }
+  run.api.finish(stoppedByUser ? '已停止' : '');
   paint();
   chatStreaming = false; setSend();
   stopSvcWatchSoon();

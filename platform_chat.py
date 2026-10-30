@@ -249,6 +249,53 @@ async def _read_stream(exe: str, args: list[str], cwd: str,
             pass
 
 
+def _tool_text(c) -> str:
+    """把 tool_result 的 content 掰成人能读的文本。
+
+    CLI 给的可能是字符串，也可能是 block 列表（[{"type":"text","text":...}]）；
+    直接 json.dumps 会在界面上显示成 `[{"type": "text", ...}]`，白瞎一块屏幕。
+    """
+    if c is None:
+        return ""
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        out = []
+        for b in c:
+            if isinstance(b, dict):
+                if b.get("type") == "text":
+                    out.append(b.get("text") or "")
+                elif b.get("type") == "image":
+                    out.append("[图片输出]")
+            elif isinstance(b, str):
+                out.append(b)
+        return "\n".join(x for x in out if x)
+    if isinstance(c, dict):
+        return c.get("text") or json.dumps(c, ensure_ascii=False)
+    return str(c)
+
+
+def _tail(s: str, lines: int = 6, limit: int = 600) -> str:
+    """工具输出的摘要：开头几行 + 结尾两行。
+
+    开头是「命令干了什么、结果长什么样」，结尾是「成没成、报没报错」。
+    只留尾部会把 `ls` 这类「结果在开头」的输出整段切掉，只留头会把
+    `Exit Code` 丢掉——所以两头都要。
+    """
+    txt = (s or "").replace("\r", "")
+    if not txt.strip():
+        return ""
+    rows = [r for r in txt.split("\n") if r.strip()]
+    if len(rows) <= lines:
+        body = "\n".join(rows)
+    else:
+        # 头尾都留：开头是「命令干了什么」，结尾是「成没成」。
+        # 只留尾部会把 `ls` 这种「前面才是结果」的输出切掉。
+        head, tail = rows[:lines - 2], rows[-2:]
+        body = "\n".join(head + ["…"] + tail)
+    return body[-limit:]
+
+
 def _tool_label(name: str, inp: dict) -> str:
     # Bash 的输入是 command，其它工具是路径/模式；命令可能带换行，压成一行再看
     arg = inp.get("command") or inp.get("file_path") or inp.get("path") \
@@ -300,8 +347,12 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
 
     args = base + (["--resume", sid] if resume else ["--session-id", sid])
 
-    # 首次事件
+    # 首批事件：先把「活人」信号送出去。
+    # 从这一刻到模型吐第一个字，平台通道要 10~20 秒（进程冷启动 + 排队），
+    # 中间没有任何正文。不发这些事件，用户看到的就只是一个转圈，
+    # 分不清是在干活还是已经死了。
     yield {"type": "meta", "sid": sid}
+    yield {"type": "stage", "stage": "spawn", "text": "正在唤醒模型"}
 
     san = _Sanitizer()
     got_any = False
@@ -310,6 +361,12 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
     seen_ports: list[int] = []      # 本轮认出来的端口（去重）
     scan = ""                       # 跨 delta 的端口识别缓冲，防止标记被切两半
     idle_limit = IDLE_LIMIT_EXEC if CAN_EXEC else IDLE_LIMIT
+    phase = "spawn"                 # spawn / ready / thinking / tool / writing
+    t_start = time.time()
+    last_visible = time.time()      # 用户侧最后一次看到新内容
+    writing = False
+    running: dict[str, dict] = {}   # tool_use_id -> {name, t0, detail}
+    tool_labels: list[str] = []     # 本轮调用过的工具（给历史消息留个记号）
 
     def sniff(text: str) -> list[dict]:
         nonlocal scan
@@ -322,9 +379,29 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
                 out.append({"type": "port", "port": p})
         return out
 
+    def beat():
+        """用户侧安静太久就报一次秒表。
+
+        只靠 readline 超时不够：CLI 在跑工具时会持续吐 input_json_delta，
+        那对我们的前端等于「什么都没发生」。所以每个原始事件都过一遍，
+        只要屏幕上已经 8 秒没动静，就推一条 tick。
+        """
+        nonlocal last_visible
+        if time.time() - last_visible < 8:
+            return None
+        last_visible = time.time()
+        return {"type": "tick", "idle": int(time.time() - t_start),
+                "phase": phase,
+                "tool": next(iter(running.values()), {}).get("detail", "")}
+
     while True:
         async for ev in _read_stream(exe, args, str(ws), idle_limit):
             t = ev.get("type")
+            if t in ("delta", "tool", "stage", "thinking", "ready", "port", "error"):
+                last_visible = time.time()   # 屏幕上有新东西，秒表不用催
+            b = beat()
+            if b:
+                yield b
 
             if t == "stream_event":
                 e = ev.get("event") or {}
@@ -332,7 +409,12 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
                 if et == "content_block_start":
                     cb = e.get("content_block") or {}
                     if cb.get("type") == "tool_use":
-                        yield {"type": "tool", "text": cb.get("name", "")}
+                        tid = cb.get("id") or ("t%d" % (len(running) + 1))
+                        nm = cb.get("name") or "tool"
+                        running[tid] = {"name": nm, "t0": time.time(), "detail": ""}
+                        phase = "tool"
+                        yield {"type": "tool", "state": "start", "id": tid,
+                               "name": nm, "seq": len(running), "phase": phase}
                 elif et == "content_block_delta":
                     d = e.get("delta") or {}
                     if d.get("type") == "text_delta" and d.get("text"):
@@ -343,6 +425,11 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
                         if txt:
                             if txt.strip():
                                 got_any = True
+                            if not writing:
+                                writing = True
+                                phase = "writing"
+                                yield {"type": "stage", "stage": "writing",
+                                       "text": "开始作答"}
                             yield {"type": "delta", "text": txt}
                             for pev in sniff(txt):
                                 yield pev
@@ -368,7 +455,16 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
                         else:
                             dropped += 1
                     elif blk.get("type") == "tool_use":
-                        yield {"type": "tool", "text": _tool_label(blk.get("name", ""), blk.get("input") or {})}
+                        # 到这才拿得到完整入参，把「执行什么」补上，
+                        # 前端那条「⏳ Bash」就能变成「⏳ git clone …」
+                        tid = blk.get("id") or ""
+                        label = _tool_label(blk.get("name", ""), blk.get("input") or {})
+                        tool_labels.append(label)
+                        info = running.get(tid)
+                        if info is not None:
+                            info["detail"] = label
+                        yield {"type": "tool", "state": "detail", "id": tid,
+                               "name": blk.get("name", ""), "detail": label}
 
             elif t == "user":
                 # 工具回显里常有 "Listening on http://127.0.0.1:5173"，
@@ -377,9 +473,20 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
                 for blk in (msg.get("content") or []):
                     if isinstance(blk, dict) and blk.get("type") == "tool_result":
                         c = blk.get("content")
-                        s = c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
+                        s = _tool_text(c)
                         for pev in sniff(s[:4000]):
                             yield pev
+                        # 工具结束：把耗时 + 输出尾巴推给前端，
+                        # 用户能看到「命令真在跑、跑出什么了」，而不是干等
+                        tid = blk.get("tool_use_id") or ""
+                        info = running.pop(tid, None)
+                        ms = int((time.time() - info["t0"]) * 1000) if info else 0
+                        phase = "thinking"
+                        yield {"type": "tool", "state": "done", "id": tid,
+                               "name": (info or {}).get("name", ""),
+                               "detail": (info or {}).get("detail", ""),
+                               "ms": ms, "ok": not blk.get("is_error"),
+                               "out": _tail(s), "phase": phase}
 
             elif t == "ai-title":
                 tt = ev.get("aiTitle") or ev.get("title")
@@ -391,8 +498,13 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
                     err = ev.get("result") or ev.get("error") or "平台通道返回错误"
                     yield {"type": "error", "text": str(err)[:400]}
 
+            elif t == "ping":
+                pass        # 保活而已，秒表由 beat() 统一发
+
             elif t == "system" and ev.get("subtype") == "init":
+                phase = "thinking"
                 yield {"type": "ready", "model": ev.get("model", "")}
+                yield {"type": "stage", "stage": "thinking", "text": "模型在思考"}
 
         # 一轮下来只有伪工具调用、没有正文，或者续接的会话已经"学坏"了：
         # 换一个干净会话重试一次，宁可丢上下文也别让用户对着空白发呆。
@@ -407,4 +519,4 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
         break
 
     yield {"type": "done", "sid": sid, "empty": not got_any, "dropped": dropped,
-           "ports": seen_ports}
+           "ports": seen_ports, "tools": tool_labels}
