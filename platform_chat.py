@@ -29,6 +29,7 @@ import os
 import re
 import shutil
 import time
+import uuid
 from pathlib import Path
 
 TOOLS = os.environ.get("DESK_CHAT_TOOLS", "").strip()
@@ -228,7 +229,6 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
         ws = Path("/workspace")
 
     if not sid:
-        import uuid
         sid = "desk-" + uuid.uuid4().hex[:16]
 
     base = [exe, "-p", prompt,
@@ -308,11 +308,15 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
             elif t == "system" and ev.get("subtype") == "init":
                 yield {"type": "ready", "model": ev.get("model", "")}
 
-        # --resume 找不到会话时 CLI 会直接失败且没有任何输出 → 退化为新建
-        if not got_any and resume and not retried:
+        # 一轮下来只有伪工具调用、没有正文，或者续接的会话已经"学坏"了：
+        # 换一个干净会话重试一次，宁可丢上下文也别让用户对着空白发呆。
+        if not got_any and not retried and (dropped or resume):
             retried = True
             resume = False
+            sid = "desk-" + uuid.uuid4().hex[:16]
             args = base + ["--session-id", sid]
+            san = _Sanitizer()
+            yield {"type": "meta", "sid": sid}
             continue
         break
 
