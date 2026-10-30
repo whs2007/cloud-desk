@@ -187,6 +187,8 @@ WorkBuddy 给的是一台沙箱容器，不是一个可调用的配置服务，�
 
 Issue / PR 都欢迎。改动前端不需要构建步骤，改完刷新即可；后端就一个 `server.py`，改完重启。
 
+仓库自带一份 CI 示例（`docs/ci.yml`）：语法检查 + 启动冒烟。想让它跑起来，复制到 `.github/workflows/ci.yml` 再提交即可（提交 workflow 文件要求 token 带 `workflow` 权限）。
+
 ## License
 
 [MIT](LICENSE)
