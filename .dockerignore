@@ -1,0 +1,17 @@
+.git
+.gitignore
+.github
+docs
+node_modules
+__pycache__
+*.pyc
+.venv
+venv
+data
+auth.json
+remember.json
+chat_config.json
+.env
+.env.*
+*.zip
+*.patch

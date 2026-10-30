@@ -1,15 +1,12 @@
 {
-  "name": "webos",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "cloud-desk",
+  "version": "17.0.0",
+  "private": true,
+  "description": "手机点开即用的 Linux 工作台。此文件只用于记录 static/vendor 下前端资源的来源与版本，运行时不依赖 Node。",
+  "license": "MIT",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "vendor": "echo '把 node_modules 里的 xterm 产物拷到 static/vendor/ 即可，无需构建'"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
