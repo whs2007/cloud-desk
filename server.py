@@ -399,6 +399,13 @@ def spawn_pty(env):
     pid, fd = pty.fork()
     if pid == 0:                                    # 子进程
         try:
+            # 终端默认落在工作区，而不是 server.py 所在目录
+            # （容器里两者不同，否则用户进来先看到一堆源码文件）。
+            try:
+                if WS_ROOT and os.path.isdir(WS_ROOT):
+                    os.chdir(WS_ROOT)
+            except Exception:
+                pass
             if TMUX_BIN:
                 s = TMUX_SESSION
                 conf = str(BASE / "tmux.conf")
@@ -940,6 +947,15 @@ SELF_DIR = BASE.name
 SENSITIVE = {"auth.json", "remember.json", "chat_config.json",
              "bridge_secret", "session_secret",
              "desk.db", "desk.db-wal", "desk.db-shm"}
+
+
+@app.get("/api/env")
+async def api_env(request: Request):
+    """告诉前端真实的工作区根：WORKSPACE_ROOT 不一定是 /workspace，
+    写死会让文件页指向一个不存在的目录（表现为整页空白）。"""
+    if not authed(request.cookies.get("session")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return {"workspace": str(WS_ROOT), "project": str(BASE)}
 
 
 @app.get("/api/fs/list")
