@@ -37,7 +37,75 @@ TOOLS = os.environ.get("DESK_CHAT_TOOLS", "").strip()
 # 想让它能读工作区文件，部署时设 DESK_CHAT_TOOLS="Read,Glob,Grep"（只读，安全）。
 # 开启后模型偶尔会尝试调用不存在的 Bash，产生 "Tool does not exist" 噪声，
 # 这里在输出层做一次过滤，避免脏文本落到聊天记录里。
-_NOISE = re.compile(r'^Tool "[^"]+" does not exist in the current tool set\.?$')
+_NOISE = re.compile(r'Tool "[^"]{1,40}" does not exist in the current tool set\.?')
+
+# 没有工具时，模型会把「想执行」变成伪工具调用的**文本**（形如
+# <tool_calls:opensource><tool_call:opensource>Bash command={...}</tool_call...>），
+# 直接渲染就是一团乱码。系统提示里先把话说明白，剩下的靠 _Sanitizer 兜住。
+_NO_TOOL_HINT = (
+    "你现在处于「对话面板」，没有任何工具：不能执行命令、不能读写文件、不能访问网络。"
+    "绝对不要输出 <tool_call> / <tool_calls> 之类的伪工具标记，也不要假装已经执行。"
+    "如果用户要求拉取仓库、安装依赖、启动服务，请直接给出可以在终端粘贴执行的命令，"
+    "并明确提示「到 💻 终端 标签执行」。"
+)
+
+_TOOL_OPEN = "<tool_call"
+
+IDLE_TICK = 15          # 每 15 秒一次心跳
+IDLE_LIMIT = 120        # 连续静默 120 秒判定卡死
+
+
+class _Sanitizer:
+    """把流式文本里的伪工具调用标记整块吃掉。
+
+    块可能被切成多个 delta（"<tool_ca" + "lls:…"），所以保留跨片状态；
+    未闭合的块一直丢到出现 </tool_call…> 为止，结尾残留的半个标签也不输出。
+    """
+
+    HOLD = len(_TOOL_OPEN) - 1
+
+    def __init__(self):
+        self.pending = ""
+        self.in_block = False
+
+    def feed(self, text: str) -> str:
+        s = self.pending + (text or "")
+        self.pending = ""
+        out: list[str] = []
+        while s:
+            if self.in_block:
+                j = s.find("</tool_call")
+                if j < 0:
+                    return "".join(out)
+                k = s.find(">", j)
+                if k < 0:
+                    return "".join(out)
+                s = s[k + 1:]
+                self.in_block = False
+                continue
+
+            i = s.find(_TOOL_OPEN)
+            if i >= 0:
+                out.append(s[:i])
+                s = s[i:]
+                self.in_block = True
+                continue
+
+            keep = 0
+            for n in range(min(self.HOLD, len(s)), 0, -1):
+                if _TOOL_OPEN.startswith(s[-n:]):
+                    keep = n
+                    break
+            if keep:
+                self.pending = s[-keep:]
+                out.append(s[:-keep])
+            else:
+                out.append(s)
+            break
+        res = _NOISE.sub("", "".join(out))
+        # 块闭合后可能还留一个 </tool_calls:xxx> 的尾巴，一并清掉
+        return re.sub(r"</?tool_calls?[^>]*>", "", res)
+
 _MODELS_CACHE = {"at": 0.0, "list": []}
 _HELP_CACHE = {"at": 0.0, "ok": False}
 
@@ -87,7 +155,11 @@ def models(force: bool = False) -> list[str]:
 
 
 async def _read_stream(exe: str, args: list[str], cwd: str):
-    """拉起 CLI 并逐行产出 JSON 对象。"""
+    """拉起 CLI 并逐行产出 JSON 对象。
+
+    CLI 冷启动或长思考时可能几十秒没有任何输出，浏览器那头的 SSE 会像"卡住"；
+    这里每 15 秒发一次 ping，让连接保持活跃，连续 120 秒真没动静才判定失败。
+    """
     proc = await asyncio.create_subprocess_exec(
         exe, *args,
         cwd=cwd,
@@ -98,12 +170,20 @@ async def _read_stream(exe: str, args: list[str], cwd: str):
     )
     try:
         assert proc.stdout is not None
+        idle = 0
         while True:
             try:
-                line = await asyncio.wait_for(proc.stdout.readline(), timeout=180)
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=IDLE_TICK)
             except asyncio.TimeoutError:
-                yield {"type": "error", "text": "平台通道 180 秒无响应，已中止"}
-                break
+                idle += IDLE_TICK
+                if idle >= IDLE_LIMIT:
+                    yield {"type": "error",
+                           "text": "平台通道 %d 秒没有输出，已中止。可以换个模型、把问题拆小，或者到终端里直接做"
+                                   % IDLE_LIMIT}
+                    break
+                yield {"type": "ping"}
+                continue
+            idle = 0
             if not line:
                 break
             s = line.decode("utf-8", "replace").strip()
@@ -156,14 +236,20 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
             "--tools", TOOLS,
             "--permission-mode", "dontAsk",
             "--output-format", "stream-json",
-            "--include-partial-messages"]
+            "--include-partial-messages",
+            "--max-turns", "4"]
+    if not TOOLS:
+        # 没工具就得先把话说明白，否则模型会用文本"模拟"工具调用
+        base += ["--append-system-prompt", _NO_TOOL_HINT]
 
     args = base + (["--resume", sid] if resume else ["--session-id", sid])
 
     # 首次事件
     yield {"type": "meta", "sid": sid}
 
+    san = _Sanitizer()
     got_any = False
+    dropped = 0
     retried = False
     while True:
         async for ev in _read_stream(exe, args, str(ws)):
@@ -179,11 +265,16 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
                 elif et == "content_block_delta":
                     d = e.get("delta") or {}
                     if d.get("type") == "text_delta" and d.get("text"):
-                        txt = d["text"]
-                        if _NOISE.match(txt.strip()):
-                            continue          # 工具不存在的报错，不展示给用户
-                        got_any = True
-                        yield {"type": "delta", "text": txt}
+                        raw = d["text"]
+                        txt = san.feed(raw)
+                        # 注意：换行常常是单独一个 delta，不能因为 strip 为空就丢掉，
+                        # 否则命令、代码块会全部黏成一行。
+                        if txt:
+                            if txt.strip():
+                                got_any = True
+                            yield {"type": "delta", "text": txt}
+                        elif raw.strip():
+                            dropped += 1     # 只有伪工具标记，没有正文
                     elif d.get("type") == "thinking_delta" and d.get("thinking"):
                         yield {"type": "thinking", "text": d["thinking"]}
                 elif et == "message_stop":
@@ -194,8 +285,13 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
                 msg = ev.get("message") or {}
                 for blk in (msg.get("content") or []):
                     if blk.get("type") == "text" and blk.get("text") and not got_any:
-                        got_any = True
-                        yield {"type": "delta", "text": blk["text"]}
+                        clean = san.feed(blk["text"])
+                        if clean:
+                            if clean.strip():
+                                got_any = True
+                            yield {"type": "delta", "text": clean}
+                        else:
+                            dropped += 1
                     elif blk.get("type") == "tool_use":
                         yield {"type": "tool", "text": _tool_label(blk.get("name", ""), blk.get("input") or {})}
 
@@ -220,4 +316,4 @@ async def stream(prompt: str, model: str, workspace: str, sid: str,
             continue
         break
 
-    yield {"type": "done", "sid": sid, "empty": not got_any}
+    yield {"type": "done", "sid": sid, "empty": not got_any, "dropped": dropped}

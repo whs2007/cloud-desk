@@ -120,6 +120,8 @@ DESK_PASSWORD='一个足够长的密码' python3 server.py
 
 安全默认：平台通道**禁用全部工具**（`--tools ""`），模型只能说话。想让它读工作区，设 `DESK_CHAT_TOOLS="Read,Glob,Grep"`。
 
+对话页标题下面会写明当前能力（`仅对话` / `可读文件` / `可执行`），省得你试了才发现它动不了手。生成过程中右下角是停止键，随时能打断。
+
 **会话存储**：SQLite 单文件（`data/desk.db`，WAL）。两张表：`conversations`、`messages`。不用 jsonl 是因为要按会话过滤、并发写防撕裂、可排序；不引 Redis/Postgres 是因为单机工具多一个服务就多一个会坏的地方。备份 = 拷走这一个文件。
 
 **浏览**：终端里 `python3 -m http.server 8000`，浏览页顶部会冒出 `8000` 胶囊，点开即内嵌。任意网址走服务端 Chromium 截图回传，点画面 = 点元素，上下滑 = 滚动页面。
@@ -176,6 +178,9 @@ data/                  # 会话库（gitignore）
 
 **终端一直转圈？**
 反代没转发 WebSocket 升级头。补上 `Upgrade` / `Connection` 两行，或等它自动降级为轮询。
+
+**我让它把某个 GitHub 项目拉下来跑，它只回了一堆命令？**
+这是设计如此：对话通道默认没开工具，它碰不到 shell。它给的那串命令复制到 💻 终端 就能用；想让它在对话里直接执行，得设 `DESK_CHAT_TOOLS`（等于把这台机器的 shell 交给模型，自己权衡）。早期版本遇到这种情况会吐出一堆 `<tool_call>` 标记，现在输出层会过滤掉，并明确告诉你「去终端执行」。
 
 **忘记密码？**
 删掉 `auth.json` 重启会重新生成并打印；或 `DESK_PASSWORD=新密码 python3 server.py`（需先删 `auth.json`）。

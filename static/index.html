@@ -1072,6 +1072,8 @@ let convs = [];             // 会话列表
 let chatModel = 'auto';
 let chatProv = 'platform';
 let chatStreaming = false;
+let chatAbort = null;       // 停止生成用的 AbortController
+let chatTools = '';         // 平台通道允许的工具（空 = 只能聊天）
 const $ = id => document.getElementById(id);
 
 try { chatModel = localStorage.getItem('cw_model') || 'auto'; } catch(e) {}
@@ -1082,9 +1084,23 @@ function esc(s){
     c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
 
+/* 清掉历史消息里的「伪工具调用」痕迹。
+   无工具模式下，模型会把想执行的动作写成
+   <tool_calls:opensource><tool_call:opensource>Bash command={...}</tool_call…>
+   这类纯文本，渲染出来就是一坨乱码。后端已在输出层拦截，
+   这里再兜一次，让旧记录也能正常显示。 */
+function cleanMarkup(s){
+  return String(s == null ? '' : s)
+    .replace(/<tool_call[^>]*>[\s\S]*?<\/tool_call[^>]*>/gi, '')
+    .replace(/<\/?tool_calls?[^>]*>/gi, '')
+    .replace(/Tool "[^"]{1,40}" does not exist in the current tool set\.?/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 let _toastT = null;
-function toast(msg){
-  const t = $('toast'); if (!t) return;
+function toast(msg){  const t = $('toast'); if (!t) return;
   t.textContent = msg; t.classList.add('show');
   clearTimeout(_toastT);
   _toastT = setTimeout(() => t.classList.remove('show'), 1900);
@@ -1205,8 +1221,17 @@ function msgEl(m){
            (m.model ? '<span class="mdl">' + esc(m.model) + '</span>' : '') + '</div>';
   }
   const tool = m.tool ? '<div class="tool">' + esc(m.tool) + '</div>' : '';
-  bub.innerHTML = head + tool +
-    '<div class="md">' + (isUser ? esc(m.content) : mdRender(m.content)) + '</div>';
+  // 早期版本会把「伪工具调用」写进记录，清洗后可能一个字都不剩，
+  // 这时给一句灰字说明，而不是留一个空气泡。
+  let body;
+  if (isUser){
+    body = esc(m.content);
+  } else {
+    const clean = cleanMarkup(m.content);
+    body = clean ? mdRender(clean)
+                 : '<span style="color:var(--dim)">（这条回复没有可显示的文字）</span>';
+  }
+  bub.innerHTML = head + tool + '<div class="md">' + body + '</div>';
   el.appendChild(av); el.appendChild(bub);
   return el;
 }
@@ -1261,7 +1286,11 @@ function paintHead(){
   $('chtitle').textContent = t;
   const n = $('chatlist').querySelectorAll('.msg').length;
   $('chmeta').textContent = n ? (n + ' 条消息') : '暂无消息';
-  $('chprov').textContent = chatProv === 'byo' ? '自有 API' : '平台通道';
+  // 把通道能力写在标题下面：让人一眼知道「它能不能动手」，而不是试了才发现
+  const cap = chatProv === 'byo' ? ''
+            : (chatTools ? (/bash|write|edit/i.test(chatTools) ? ' · 可执行' : ' · 可读文件')
+                         : ' · 仅对话');
+  $('chprov').textContent = (chatProv === 'byo' ? '自有 API' : '平台通道') + cap;
   $('chatmodelv').textContent = chatModel || 'auto';
   const w = $('chatws');
   w.textContent = chatWS;
@@ -1364,8 +1393,19 @@ function newConv(){
 
 /* ── 发送 ── */
 function setSend(){
-  const t = $('chattext');
-  $('chatsend').disabled = chatStreaming || !t.value.trim();
+  const t = $('chattext'), b = $('chatsend');
+  if (chatStreaming){
+    // 生成中：按钮变成「停止」，随时能打断——手机上尤其需要
+    b.disabled = false;
+    b.textContent = '■';
+    b.title = '停止生成';
+    b.classList.add('stop');
+  } else {
+    b.textContent = '↑';
+    b.title = '发送';
+    b.classList.remove('stop');
+    b.disabled = !t.value.trim();
+  }
 }
 
 async function chatSend(){
@@ -1392,7 +1432,7 @@ async function streamChat(text){
 
   let acc = '', toolTxt = '', lastPaint = 0, raf = null;
   const paint = () => {
-    md.innerHTML = acc ? mdRender(acc) : '<span class="typing"></span>';
+    md.innerHTML = acc ? mdRender(cleanMarkup(acc)) : '<span class="typing"></span>';
     const tw = a.querySelector('.tool');
     if (tw) tw.textContent = toolTxt;
     scrollDown(false);
@@ -1403,9 +1443,13 @@ async function streamChat(text){
     else if (!raf) raf = setTimeout(() => { raf = null; lastPaint = Date.now(); paint(); }, 70);
   };
 
+  const ctrl = new AbortController();
+  chatAbort = ctrl;
+
   try{
     const r = await fetch('/api/chat/completions', {
       method:'POST', headers:{'Content-Type':'application/json'},
+      signal: ctrl.signal,
       body: JSON.stringify({
         conv_id: curConv ? curConv.id : '',
         model: chatModel, provider: chatProv, workspace: chatWS,
@@ -1447,10 +1491,15 @@ async function streamChat(text){
       }
     }
   }catch(e){
-    if (!acc) acc = '⚠️ 网络中断：' + e;
+    if (e && e.name === 'AbortError'){
+      if (acc) acc += '\n\n_（已停止）_';       // 保留已经生成的部分
+    } else if (!acc){
+      acc = '⚠️ 网络中断：' + (e && e.message ? e.message : e);
+    }
   }
 
   if (raf) clearTimeout(raf);
+  chatAbort = null;
   a.classList.remove('pending');
   if (toolTxt){
     let tw = a.querySelector('.tool');
@@ -1633,6 +1682,7 @@ async function loadChatConfig(){
     const j = await r.json();
     if (j.error) return;
     chatCfg = j;
+    chatTools = j.tools || '';
     const ok = !!(j.platform && j.platform.available);
     const pm = (j.platform && j.platform.models) || [];
     if (chatProv === 'platform' && pm.length && pm.indexOf(chatModel) < 0) chatModel = pm[0];
@@ -1657,7 +1707,10 @@ $('btnws').onclick = () => {
   openModal('wsModal'); wsListRender();
 };
 
-$('chatsend').onclick = chatSend;
+$('chatsend').onclick = () => {
+  if (chatStreaming){ if (chatAbort) chatAbort.abort(); return; }
+  chatSend();
+};
 $('chattext').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); chatSend(); }
 });

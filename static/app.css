@@ -416,6 +416,11 @@ body.tab-term #tab-term{bottom:calc(var(--tbh) + var(--kbh))}
 }
 #chatsend:active{transform:scale(.9)}
 #chatsend[disabled]{opacity:.35;box-shadow:none;cursor:default}
+/* 生成中：同一个按钮变成停止键（手机上不用翻菜单打断） */
+#chatsend.stop{
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--stroke);box-shadow:none;font-size:10px;
+}
 
 /* ── 会话列表抽屉 ── */
 #convsheet{

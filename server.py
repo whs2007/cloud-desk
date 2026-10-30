@@ -1262,6 +1262,7 @@ async def chat_config(request: Request):
     return {"configured": bool(cfg.get("base_url") and cfg.get("api_key")),
             "models": cfg.get("models") or [],
             "base_url": cfg.get("base_url", ""),
+            "tools": _plat.TOOLS,
             "platform": {"available": _plat.available(),
                          "models": _plat.models()}}
 
@@ -1380,10 +1381,18 @@ async def chat_completions(request: Request):
                         cv = _store.get_conv(cid) or {}
                         if cv.get("title") in ("", "新对话"):
                             _store.update_conv(cid, title=str(ev["text"])[:40])
+                    elif t == "ping":
+                        # SSE 注释行：只为穿过网关的空闲超时，前端解析时自然跳过
+                        yield b": ping\n\n"
                     elif t == "error":
                         yield _sse({"error": ev["text"]})
                     elif t == "done" and ev.get("empty") and not acc:
-                        yield _sse({"error": "平台通道没有返回内容，请换个模型或稍后重试"})
+                        if ev.get("dropped"):
+                            yield _sse({"error": "这条回复只有工具调用、没有文字：当前对话通道不能执行命令。"
+                                                 "要拉代码、跑服务，请到 💻 终端 里执行；"
+                                                 "或在「模型」里换成自己的 API。"})
+                        else:
+                            yield _sse({"error": "平台通道没有返回内容，请换个模型或稍后重试"})
                 yield b"data: [DONE]\n\n"
             finally:
                 # 客户端中途断开时也要把已生成的部分存下来
